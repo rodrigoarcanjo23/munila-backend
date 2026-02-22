@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Categoria {
+  id        String    @id @default(uuid())
+  nome      String
+  descricao String?
+  produtos  Produto[]
+}
+
+model Localizacao {
+  id         String    @id @default(uuid())
+  codigo     String    @unique
+  zona       String
+  corredor   String
+  prateleira String
+  estoques   Estoque[]
+}
+
+model Usuario {
+  id            String         @id @default(uuid())
+  nome          String
+  cargo         String
+  email         String         @unique
+  senha         String
+  estoques      Estoque[]
+  movimentacoes Movimentacao[]
+}
+
+model Produto {
+  id           String         @id @default(uuid())
+  sku          String         @unique
+  nome         String
+  descricao    String?
+  codigoBarras String?        @unique
+  tipo         String         @default("ACABADO") 
+  precoCusto   Float?         @default(0)
+  precoVenda   Float?         @default(0)
+  
+  categoriaId  String
+  categoria    Categoria      @relation(fields: [categoriaId], references: [id])
+  estoques     Estoque[]
+  movimentacoes Movimentacao[]
+  
+  // RELAÇÃO COM AS COMPRAS
+  pedidosCompra PedidoCompra[]
+}
+
+model Estoque {
+  id            String       @id @default(uuid())
+  produtoId     String
+  produto       Produto      @relation(fields: [produtoId], references: [id])
+  quantidade    Int
+  status        String       // Ex: 'Disponível', 'Em Demonstração'
+  localizacaoId String?
+  localizacao   Localizacao? @relation(fields: [localizacaoId], references: [id])
+  responsavelId String?
+  responsavel   Usuario?     @relation(fields: [responsavelId], references: [id])
+}
+
+model Movimentacao {
+  id                  String    @id @default(uuid())
+  produtoId           String
+  produto             Produto   @relation(fields: [produtoId], references: [id])
+  usuarioId           String
+  usuario             Usuario   @relation(fields: [usuarioId], references: [id])
+  tipoAcao            String    // Ex: 'Saida_Demonstracao'
+  quantidade          Int
+  dataHora            DateTime  @default(now())
+  dataPrevistaRetorno DateTime?
+  observacao          String?
+}
+
+model Fornecedor {
+  id          String   @id @default(uuid())
+  nomeEmpresa String
+  cnpj        String?
+  contatoNome String?
+  telefone    String?
+  email       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // RELAÇÃO COM AS COMPRAS
+  pedidosCompra PedidoCompra[]
+}
+
+// ==========================================
+// A NOVA TABELA DO SUPPLY CHAIN
+// ==========================================
+model PedidoCompra {
+  id             String      @id @default(uuid())
+  fornecedorId   String
+  fornecedor     Fornecedor  @relation(fields: [fornecedorId], references: [id])
+  produtoId      String
+  produto        Produto     @relation(fields: [produtoId], references: [id])
+  quantidade     Int
+  custoTotal     Float
+  dataPrevisao   DateTime?
+  status         String      @default("Pendente") // Pode ser 'Pendente' ou 'Recebido'
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+}
