@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql" // Mudamos de "sqlite" para "postgresql"
+  provider = "postgresql" // Banco de dados na nuvem
   url      = env("DATABASE_URL")
 }
 
@@ -34,22 +34,30 @@ model Usuario {
 }
 
 model Produto {
-  id           String         @id @default(uuid())
-  sku          String         @unique
-  nome         String
-  descricao    String?
-  codigoBarras String?        @unique
-  tipo         String         @default("ACABADO") 
-  precoCusto   Float?         @default(0)
-  precoVenda   Float?         @default(0)
+  id                  String         @id @default(uuid())
+  sku                 String         @unique
+  nome                String
+  descricao           String?
+  codigoBarras        String?        @unique
+  tipo                String         @default("ACABADO") 
+  precoCusto          Float?         @default(0)
+  precoVenda          Float?         @default(0)
   
-  categoriaId  String
-  categoria    Categoria      @relation(fields: [categoriaId], references: [id])
-  estoques     Estoque[]
-  movimentacoes Movimentacao[]
+  // ==========================================
+  // NOVOS CAMPOS SOLICITADOS PELA GESTÃO
+  // ==========================================
+  lote                String?
+  enderecoLocalizacao String?        // Ex: R-01-P02-C01
+  fornecedorId        String?
+  fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
+  
+  categoriaId         String
+  categoria           Categoria      @relation(fields: [categoriaId], references: [id])
+  estoques            Estoque[]
+  movimentacoes       Movimentacao[]
   
   // RELAÇÃO COM AS COMPRAS
-  pedidosCompra PedidoCompra[]
+  pedidosCompra       PedidoCompra[]
 }
 
 model Estoque {
@@ -69,8 +77,8 @@ model Movimentacao {
   produtoId           String
   usuarioId           String
   quantidade          Int
-  tipoAcao            String    // 'Entrada_Interna', 'Saida_Interna', etc.
-  codigo              String?   // <-- NOVO CAMPO PARA O "RE000126" e "RS000126"
+  tipoAcao            String    // 'Entrada de mercadoria', 'Devolução VIAPRO', etc.
+  codigo              String?   // Campo para O "RE000126" e "RS000126"
   observacao          String?
   dataPrevistaRetorno DateTime?
   dataHora            DateTime  @default(now())
@@ -80,21 +88,26 @@ model Movimentacao {
 }
 
 model Fornecedor {
-  id          String   @id @default(uuid())
-  nomeEmpresa String
-  cnpj        String?
-  contatoNome String?
-  telefone    String?
-  email       String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String         @id @default(uuid())
+  nomeEmpresa   String
+  cnpj          String?
+  contatoNome   String?
+  telefone      String?
+  email         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
+  // ==========================================
+  // NOVA RELAÇÃO COM PRODUTOS
+  // ==========================================
+  produtos      Produto[]
+  
   // RELAÇÃO COM AS COMPRAS
   pedidosCompra PedidoCompra[]
 }
 
 // ==========================================
-// A NOVA TABELA DO SUPPLY CHAIN
+// MÓDULO SUPPLY CHAIN (COMPRAS)
 // ==========================================
 model PedidoCompra {
   id           String      @id @default(uuid())
@@ -102,11 +115,11 @@ model PedidoCompra {
   fornecedor   Fornecedor  @relation(fields: [fornecedorId], references: [id])
   produtoId    String
   produto      Produto     @relation(fields: [produtoId], references: [id])
-  codigo       String?     // <-- NOVO CAMPO ADICIONADO AQUI
+  codigo       String?     // O código sequencial PC000126
   quantidade   Int
   custoTotal   Float
   dataPrevisao DateTime?
-  status       String      @default("Pendente")
+  status       String      @default("Pendente") // 'Pendente' ou 'Recebido'
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 }
