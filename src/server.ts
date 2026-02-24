@@ -231,7 +231,6 @@ app.post('/pedidos-compra', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao emitir pedido de compra.' }); }
 });
 
-// AQUI: O Recebimento com a Auditoria incluída!
 app.put('/pedidos-compra/:id/receber', async (req, res) => {
   try {
     const { id } = req.params;
@@ -356,4 +355,8 @@ app.post('/movimentacoes/ajuste', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro no ajuste' }); }
 });
 
-app.listen(3333, () => console.log("Servidor Munila rodando na porta 3333"));
+// ==========================================
+// CONFIGURAÇÃO DA PORTA
+// ==========================================
+const porta = process.env.PORT || 3333;
+app.listen(porta, () => console.log(`🚀 Servidor Munila rodando na porta ${porta}`));
