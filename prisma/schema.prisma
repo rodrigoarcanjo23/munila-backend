@@ -97,15 +97,16 @@ model Fornecedor {
 // A NOVA TABELA DO SUPPLY CHAIN
 // ==========================================
 model PedidoCompra {
-  id             String      @id @default(uuid())
-  fornecedorId   String
-  fornecedor     Fornecedor  @relation(fields: [fornecedorId], references: [id])
-  produtoId      String
-  produto        Produto     @relation(fields: [produtoId], references: [id])
-  quantidade     Int
-  custoTotal     Float
-  dataPrevisao   DateTime?
-  status         String      @default("Pendente") // Pode ser 'Pendente' ou 'Recebido'
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id           String      @id @default(uuid())
+  fornecedorId String
+  fornecedor   Fornecedor  @relation(fields: [fornecedorId], references: [id])
+  produtoId    String
+  produto      Produto     @relation(fields: [produtoId], references: [id])
+  codigo       String?     // <-- NOVO CAMPO ADICIONADO AQUI
+  quantidade   Int
+  custoTotal   Float
+  dataPrevisao DateTime?
+  status       String      @default("Pendente")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 }

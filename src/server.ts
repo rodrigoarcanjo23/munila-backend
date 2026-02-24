@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 import fornecedorRoutes from './routes/fornecedor.routes'; // Importação do módulo de fornecedores
+import nodemailer from 'nodemailer'; // <-- NOVO: Importação do Carteiro
 
 const prisma = new PrismaClient();
 const app = express();
@@ -10,38 +11,54 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// FUNÇÃO GERADORA DE CÓDIGOS SEQUENCIAIS (NOVO)
+// CONFIGURAÇÃO DO ROBÔ CARTEIRO (NODEMAILER)
 // ==========================================
+const transporter = nodemailer.createTransport({
+  service: 'gmail', // Pode usar outlook, yahoo, etc.
+  auth: {
+    user: process.env.EMAIL_USER || 'seu-email@gmail.com',
+    pass: process.env.EMAIL_PASS || 'sua-senha-de-app'
+  }
+});
+
+// ==========================================
+// FUNÇÕES GERADORAS DE CÓDIGOS SEQUENCIAIS
+// ==========================================
+
+// Para Movimentações Internas (RE / RS)
 async function gerarCodigoRequisicao(tipo: 'RE' | 'RS'): Promise<string> {
-  // Pega os últimos 2 dígitos do ano atual (Ex: 2026 vira '26')
   const anoAtual = new Date().getFullYear().toString().slice(-2);
-  
-  // Busca a última movimentação deste tipo (RE ou RS) neste ano
   const ultimaMovimentacao = await prisma.movimentacao.findFirst({
-    where: {
-      codigo: {
-        startsWith: tipo,
-        endsWith: anoAtual
-      }
-    },
+    where: { codigo: { startsWith: tipo, endsWith: anoAtual } },
     orderBy: { dataHora: 'desc' }
   });
 
   let sequencia = 1;
-
   if (ultimaMovimentacao && ultimaMovimentacao.codigo) {
-    // Extrai o número do meio. Ex: De "RE000126", corta os 2 primeiros (RE) e os 2 últimos (26), sobra "0001"
     const numeroExtraido = ultimaMovimentacao.codigo.slice(2, -2);
     const numeroAtual = parseInt(numeroExtraido, 10);
-    
-    if (!isNaN(numeroAtual)) {
-      sequencia = numeroAtual + 1;
-    }
+    if (!isNaN(numeroAtual)) sequencia = numeroAtual + 1;
   }
-
-  // Monta o código garantindo os 4 dígitos com zeros à esquerda: RE + 0002 + 26
   const numeroFormatado = String(sequencia).padStart(4, '0');
   return `${tipo}${numeroFormatado}${anoAtual}`;
+}
+
+// Para Pedidos de Compra (PC)
+async function gerarCodigoPedidoCompra(): Promise<string> {
+  const anoAtual = new Date().getFullYear().toString().slice(-2);
+  const ultimoPedido = await prisma.pedidoCompra.findFirst({
+    where: { codigo: { startsWith: 'PC', endsWith: anoAtual } },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  let sequencia = 1;
+  if (ultimoPedido && ultimoPedido.codigo) {
+    const numeroExtraido = ultimoPedido.codigo.slice(2, -2);
+    const numeroAtual = parseInt(numeroExtraido, 10);
+    if (!isNaN(numeroAtual)) sequencia = numeroAtual + 1;
+  }
+  const numeroFormatado = String(sequencia).padStart(4, '0');
+  return `PC${numeroFormatado}${anoAtual}`;
 }
 
 // ==========================================
@@ -271,8 +288,13 @@ app.post('/pedidos-compra', async (req, res) => {
   try {
     const { fornecedorId, produtoId, quantidade, custoTotal, dataPrevisao } = req.body;
     
+    // 1. Gera o código inteligente (Ex: PC000126)
+    const codigoGerado = await gerarCodigoPedidoCompra();
+
+    // 2. Salva no Banco de Dados com o novo código
     const novoPedido = await prisma.pedidoCompra.create({
       data: {
+        codigo: codigoGerado,
         fornecedorId,
         produtoId,
         quantidade: Number(quantidade),
@@ -282,6 +304,31 @@ app.post('/pedidos-compra', async (req, res) => {
       },
       include: { fornecedor: true, produto: true }
     });
+
+    // 3. Automação de E-mail (Disparo Silencioso)
+    try {
+      const emailFornecedor = novoPedido.fornecedor?.email || '';
+      // Destinatários exigidos pelo Eduardo da ViaPro
+      const destinatarios = [
+        emailFornecedor, 
+        'gerencia.producao@viapro.com', 
+        'pcp@viapro.com', 
+        'supplychain@viapro.com'
+      ].filter(Boolean).join(', ');
+
+      const mailOptions = {
+        from: process.env.EMAIL_USER || 'viapro@seu-dominio.com',
+        to: destinatarios,
+        subject: `[ViaPro ERP] Novo Pedido de Compra: ${codigoGerado}`,
+        text: `Olá, ${novoPedido.fornecedor?.nomeEmpresa}!\n\nUm novo Pedido de Compra foi gerado pelo nosso sistema.\n\n📄 Código: ${codigoGerado}\n📦 Produto: ${novoPedido.produto?.nome}\n🔢 Quantidade: ${quantidade} unidades\n📅 Previsão de Entrega: ${dataPrevisao ? new Date(dataPrevisao).toLocaleDateString('pt-BR') : 'A combinar'}\n\nAtenciosamente,\nEquipe de Supply Chain - ViaPro`
+      };
+
+      // Dispara o e-mail em segundo plano. O `.catch` evita que a API "quebre" caso a senha do email esteja errada.
+      transporter.sendMail(mailOptions).catch(console.error);
+    } catch (emailError) {
+      console.log("Aviso: O pedido foi salvo, mas houve uma falha ao preparar o e-mail.", emailError);
+    }
+
     return res.status(201).json(novoPedido);
   } catch (error) { return res.status(500).json({ error: 'Erro ao emitir pedido de compra.' }); }
 });
@@ -341,7 +388,7 @@ app.put('/pedidos-compra/:id/receber', async (req, res) => {
 // OPERAÇÕES DE MOVIMENTAÇÃO DO ESTOQUE
 // ==========================================
 
-// --- NOVAS ROTAS COM CÓDIGOS SEQUENCIAIS ---
+// --- ROTAS COM CÓDIGOS SEQUENCIAIS ---
 app.post('/movimentacoes/entrada-interna', async (req, res) => {
   try {
     const { produtoId, usuarioId, estoqueDestinoId, quantidade, observacao } = req.body;
