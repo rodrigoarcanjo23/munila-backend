@@ -159,12 +159,34 @@ app.put('/usuarios/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar usuário' }); }
 });
 
+
+
 app.delete('/usuarios/:id', async (req, res) => {
   try {
     await prisma.usuario.delete({ where: { id: req.params.id } });
     return res.status(204).send();
   } catch (error) { 
     return res.status(400).json({ error: 'Não é possível excluir usuário com histórico.' }); 
+  }
+});
+
+app.put('/localizacoes/:id', async (req, res) => {
+  try {
+    const { codigo, zona, corredor, prateleira } = req.body;
+    const atualizado = await prisma.localizacao.update({
+      where: { id: req.params.id },
+      data: { codigo, zona, corredor, prateleira }
+    });
+    return res.json(atualizado);
+  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar local' }); }
+});
+
+app.delete('/localizacoes/:id', async (req, res) => {
+  try {
+    await prisma.localizacao.delete({ where: { id: req.params.id } });
+    return res.status(204).send();
+  } catch (error) { 
+    return res.status(400).json({ error: 'Não é possível excluir um local que já contém estoque.' }); 
   }
 });
 
