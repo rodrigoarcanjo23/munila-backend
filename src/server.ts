@@ -10,6 +10,41 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
+// FUNÇÃO GERADORA DE CÓDIGOS SEQUENCIAIS (NOVO)
+// ==========================================
+async function gerarCodigoRequisicao(tipo: 'RE' | 'RS'): Promise<string> {
+  // Pega os últimos 2 dígitos do ano atual (Ex: 2026 vira '26')
+  const anoAtual = new Date().getFullYear().toString().slice(-2);
+  
+  // Busca a última movimentação deste tipo (RE ou RS) neste ano
+  const ultimaMovimentacao = await prisma.movimentacao.findFirst({
+    where: {
+      codigo: {
+        startsWith: tipo,
+        endsWith: anoAtual
+      }
+    },
+    orderBy: { dataHora: 'desc' }
+  });
+
+  let sequencia = 1;
+
+  if (ultimaMovimentacao && ultimaMovimentacao.codigo) {
+    // Extrai o número do meio. Ex: De "RE000126", corta os 2 primeiros (RE) e os 2 últimos (26), sobra "0001"
+    const numeroExtraido = ultimaMovimentacao.codigo.slice(2, -2);
+    const numeroAtual = parseInt(numeroExtraido, 10);
+    
+    if (!isNaN(numeroAtual)) {
+      sequencia = numeroAtual + 1;
+    }
+  }
+
+  // Monta o código garantindo os 4 dígitos com zeros à esquerda: RE + 0002 + 26
+  const numeroFormatado = String(sequencia).padStart(4, '0');
+  return `${tipo}${numeroFormatado}${anoAtual}`;
+}
+
+// ==========================================
 // MÓDULO DE FORNECEDORES
 // ==========================================
 app.use('/fornecedores', fornecedorRoutes);
@@ -159,34 +194,12 @@ app.put('/usuarios/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar usuário' }); }
 });
 
-
-
 app.delete('/usuarios/:id', async (req, res) => {
   try {
     await prisma.usuario.delete({ where: { id: req.params.id } });
     return res.status(204).send();
   } catch (error) { 
     return res.status(400).json({ error: 'Não é possível excluir usuário com histórico.' }); 
-  }
-});
-
-app.put('/localizacoes/:id', async (req, res) => {
-  try {
-    const { codigo, zona, corredor, prateleira } = req.body;
-    const atualizado = await prisma.localizacao.update({
-      where: { id: req.params.id },
-      data: { codigo, zona, corredor, prateleira }
-    });
-    return res.json(atualizado);
-  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar local' }); }
-});
-
-app.delete('/localizacoes/:id', async (req, res) => {
-  try {
-    await prisma.localizacao.delete({ where: { id: req.params.id } });
-    return res.status(204).send();
-  } catch (error) { 
-    return res.status(400).json({ error: 'Não é possível excluir um local que já contém estoque.' }); 
   }
 });
 
@@ -218,6 +231,26 @@ app.delete('/produtos/:id', async (req, res) => {
     return res.status(204).send();
   } catch (error) { 
     return res.status(400).json({ error: 'Não é possível excluir um produto com histórico.' }); 
+  }
+});
+
+app.put('/localizacoes/:id', async (req, res) => {
+  try {
+    const { codigo, zona, corredor, prateleira } = req.body;
+    const atualizado = await prisma.localizacao.update({
+      where: { id: req.params.id },
+      data: { codigo, zona, corredor, prateleira }
+    });
+    return res.json(atualizado);
+  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar local' }); }
+});
+
+app.delete('/localizacoes/:id', async (req, res) => {
+  try {
+    await prisma.localizacao.delete({ where: { id: req.params.id } });
+    return res.status(204).send();
+  } catch (error) { 
+    return res.status(400).json({ error: 'Não é possível excluir um local que já contém estoque.' }); 
   }
 });
 
@@ -307,6 +340,79 @@ app.put('/pedidos-compra/:id/receber', async (req, res) => {
 // ==========================================
 // OPERAÇÕES DE MOVIMENTAÇÃO DO ESTOQUE
 // ==========================================
+
+// --- NOVAS ROTAS COM CÓDIGOS SEQUENCIAIS ---
+app.post('/movimentacoes/entrada-interna', async (req, res) => {
+  try {
+    const { produtoId, usuarioId, estoqueDestinoId, quantidade, observacao } = req.body;
+    const resultado = await prisma.$transaction(async (tx) => {
+      const estoque = await tx.estoque.findUnique({ where: { id: estoqueDestinoId } });
+      if (!estoque) throw new Error("Estoque de destino não encontrado");
+      
+      // Atualiza saldo
+      await tx.estoque.update({ 
+        where: { id: estoqueDestinoId }, 
+        data: { quantidade: estoque.quantidade + quantidade } 
+      });
+      
+      // Gera o código RE inteligente
+      const codigoGerado = await gerarCodigoRequisicao('RE');
+      
+      // Salva o histórico com o código novo
+      return await tx.movimentacao.create({
+        data: { 
+          produtoId, 
+          usuarioId, 
+          quantidade, 
+          tipoAcao: 'Entrada interna', 
+          codigo: codigoGerado,
+          observacao: observacao || `Entrada Interna ViaPro` 
+        }
+      });
+    });
+    return res.status(201).json(resultado);
+  } catch (error: any) { 
+    return res.status(500).json({ error: error.message || 'Erro na entrada interna' }); 
+  }
+});
+
+app.post('/movimentacoes/saida-interna', async (req, res) => {
+  try {
+    const { produtoId, usuarioId, estoqueOrigemId, quantidade, observacao } = req.body;
+    const resultado = await prisma.$transaction(async (tx) => {
+      const estoque = await tx.estoque.findUnique({ where: { id: estoqueOrigemId } });
+      if (!estoque || estoque.quantidade < quantidade) {
+        throw new Error("Saldo insuficiente na prateleira selecionada!");
+      }
+      
+      // Atualiza saldo
+      await tx.estoque.update({ 
+        where: { id: estoqueOrigemId }, 
+        data: { quantidade: estoque.quantidade - quantidade } 
+      });
+      
+      // Gera o código RS inteligente
+      const codigoGerado = await gerarCodigoRequisicao('RS');
+      
+      // Salva o histórico com o código novo
+      return await tx.movimentacao.create({
+        data: { 
+          produtoId, 
+          usuarioId, 
+          quantidade, 
+          tipoAcao: 'Saída interna', 
+          codigo: codigoGerado,
+          observacao: observacao || `Saída Interna ViaPro` 
+        }
+      });
+    });
+    return res.status(201).json(resultado);
+  } catch (error: any) { 
+    return res.status(500).json({ error: error.message || 'Erro na saída interna' }); 
+  }
+});
+
+// --- ROTAS ANTIGAS DE MOVIMENTAÇÃO MANTIDAS PARA COMPATIBILIDADE ---
 app.post('/movimentacoes/entrada', async (req, res) => {
   try {
     const { produtoId, usuarioId, estoqueDestinoId, quantidade, observacao } = req.body;
@@ -316,7 +422,7 @@ app.post('/movimentacoes/entrada', async (req, res) => {
       
       await tx.estoque.update({ where: { id: estoqueDestinoId }, data: { quantidade: estoque.quantidade + quantidade } });
       return await tx.movimentacao.create({
-        data: { produtoId, usuarioId, quantidade, tipoAcao: 'Entrada_Estoque', observacao: observacao || "Entrada Munila/VIAPRO" }
+        data: { produtoId, usuarioId, quantidade, tipoAcao: 'Entrada_Estoque', observacao: observacao || "Entrada ViaPro" }
       });
     });
     return res.status(201).json(resultado);
@@ -381,4 +487,4 @@ app.post('/movimentacoes/ajuste', async (req, res) => {
 // CONFIGURAÇÃO DA PORTA
 // ==========================================
 const porta = process.env.PORT || 3333;
-app.listen(porta, () => console.log(`🚀 Servidor Munila rodando na porta ${porta}`));
+app.listen(porta, () => console.log(`🚀 Servidor ViaPro rodando na porta ${porta}`));

@@ -67,14 +67,16 @@ model Estoque {
 model Movimentacao {
   id                  String    @id @default(uuid())
   produtoId           String
-  produto             Produto   @relation(fields: [produtoId], references: [id])
   usuarioId           String
-  usuario             Usuario   @relation(fields: [usuarioId], references: [id])
-  tipoAcao            String    // Ex: 'Saida_Demonstracao'
   quantidade          Int
-  dataHora            DateTime  @default(now())
-  dataPrevistaRetorno DateTime?
+  tipoAcao            String    // 'Entrada_Interna', 'Saida_Interna', etc.
+  codigo              String?   // <-- NOVO CAMPO PARA O "RE000126" e "RS000126"
   observacao          String?
+  dataPrevistaRetorno DateTime?
+  dataHora            DateTime  @default(now())
+
+  produto Produto @relation(fields: [produtoId], references: [id])
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
 }
 
 model Fornecedor {
