@@ -97,12 +97,7 @@ model Fornecedor {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  // ==========================================
-  // NOVA RELAÇÃO COM PRODUTOS
-  // ==========================================
   produtos      Produto[]
-  
-  // RELAÇÃO COM AS COMPRAS
   pedidosCompra PedidoCompra[]
 }
 
@@ -122,4 +117,16 @@ model PedidoCompra {
   status       String      @default("Pendente") // 'Pendente' ou 'Recebido'
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+}
+
+// ==========================================
+// CAIXA PRETA DE AUDITORIA
+// ==========================================
+model LogAuditoria {
+  id          String   @id @default(uuid())
+  acao        String
+  itemNome    String
+  usuarioNome String
+  motivo      String   @db.Text
+  dataHora    DateTime @default(now())
 }

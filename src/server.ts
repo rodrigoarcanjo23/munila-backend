@@ -93,7 +93,6 @@ app.get('/usuarios', async (req, res) => {
   catch (error) { return res.status(500).json({ error: 'Erro ao buscar usuários' }); }
 });
 
-// ATUALIZADO: Agora busca também os dados do Fornecedor vinculado ao produto
 app.get('/produtos', async (req, res) => {
   try {
     const produtos = await prisma.produto.findMany({ include: { categoria: true, fornecedor: true } });
@@ -116,6 +115,20 @@ app.get('/movimentacoes', async (req, res) => {
 });
 
 // ==========================================
+// ROTA DA CAIXA PRETA (AUDITORIA DE EXCLUSÕES)
+// ==========================================
+app.get('/logs-auditoria', async (req, res) => {
+  try {
+    const logs = await prisma.logAuditoria.findMany({ 
+      orderBy: { dataHora: 'desc' } 
+    });
+    return res.json(logs);
+  } catch (error) { 
+    return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); 
+  }
+});
+
+// ==========================================
 // ROTAS DE CADASTRO (POST) E EDIÇÃO (PUT) DE PRODUTOS
 // ==========================================
 app.post('/produtos', async (req, res) => {
@@ -134,24 +147,69 @@ app.post('/produtos', async (req, res) => {
 
 app.put('/produtos/:id', async (req, res) => {
   try {
-    const { sku, nome, tipo, categoriaId, descricao, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId } = req.body;
+    const { sku, nome, tipo, categoriaId, descricao, codigoBarras, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId } = req.body;
     const atualizado = await prisma.produto.update({
       where: { id: req.params.id },
       data: { 
-        sku, nome, tipo, categoriaId, descricao: descricao || null, precoCusto: precoCusto || 0, precoVenda: precoVenda || 0,
-        lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null
+        sku, 
+        nome, 
+        tipo, 
+        categoriaId, 
+        descricao: descricao || null, 
+        codigoBarras: codigoBarras || null, 
+        precoCusto: precoCusto || 0, 
+        precoVenda: precoVenda || 0,
+        lote: lote || null, 
+        enderecoLocalizacao: enderecoLocalizacao || null, 
+        fornecedorId: fornecedorId || null
       }
     });
     return res.json(atualizado);
-  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar produto' }); }
+  } catch (error) { 
+    console.error("Erro ao atualizar produto:", error);
+    return res.status(500).json({ error: 'Erro ao atualizar produto' }); 
+  }
 });
 
+// ==========================================
+// EXCLUSÃO EM CASCATA COM AUDITORIA
+// ==========================================
 app.delete('/produtos/:id', async (req, res) => {
   try {
-    await prisma.estoque.deleteMany({ where: { produtoId: req.params.id, quantidade: 0 } });
-    await prisma.produto.delete({ where: { id: req.params.id } });
+    const produtoId = req.params.id;
+    const { motivo, usuarioId } = req.body;
+
+    if (!motivo || !usuarioId) {
+      return res.status(400).json({ error: 'Motivo e identificação do utilizador são obrigatórios para exclusão.' });
+    }
+
+    const produto = await prisma.produto.findUnique({ where: { id: produtoId } });
+    const usuario = await prisma.usuario.findUnique({ where: { id: usuarioId } });
+    
+    if (!produto) return res.status(404).json({ error: 'Produto não encontrado.' });
+    const nomeResponsavel = usuario ? usuario.nome : 'Sistema / Desconhecido';
+
+    // A Mágica da Cascata Segura
+    await prisma.$transaction([
+      prisma.logAuditoria.create({
+        data: {
+          acao: 'EXCLUSÃO DE PRODUTO',
+          itemNome: `[${produto.sku}] ${produto.nome}`,
+          usuarioNome: nomeResponsavel,
+          motivo: motivo
+        }
+      }),
+      prisma.pedidoCompra.deleteMany({ where: { produtoId } }),
+      prisma.movimentacao.deleteMany({ where: { produtoId } }),
+      prisma.estoque.deleteMany({ where: { produtoId } }),
+      prisma.produto.delete({ where: { id: produtoId } })
+    ]);
+
     return res.status(204).send();
-  } catch (error) { return res.status(400).json({ error: 'Não é possível excluir um produto com histórico.' }); }
+  } catch (error) {
+    console.error("Erro na exclusão em cascata:", error);
+    return res.status(500).json({ error: 'Erro interno ao processar a exclusão auditável.' });
+  }
 });
 
 // Outras rotas básicas (Categorias, Usuarios, Locais, Estoque)...
@@ -237,12 +295,10 @@ app.post('/movimentacoes/operacao', async (req, res) => {
       let novoSaldo = estoque.quantidade;
       let codigoGerado = null;
 
-      // 1. AÇÕES QUE SOMAM ESTOQUE
       if (['Entrada de mercadoria', 'Devolução VIAPRO', 'Ajuste de Entrada de Inventário'].includes(tipoAcao)) {
         novoSaldo += qtdNum;
         codigoGerado = await gerarCodigoRequisicao('RE');
       } 
-      // 2. AÇÕES QUE SUBTRAEM ESTOQUE
       else if (['Saída de mercadoria', 'Ajuste de Saída de Inventário', 'Saída para demonstração'].includes(tipoAcao)) {
         if (estoque.quantidade < qtdNum) throw new Error("Saldo insuficiente no armazém para esta saída.");
         novoSaldo -= qtdNum;
@@ -251,20 +307,17 @@ app.post('/movimentacoes/operacao', async (req, res) => {
         throw new Error("Tipo de ação não reconhecido pelo sistema.");
       }
 
-      // 3. Atualiza o saldo do produto no armazém
       await tx.estoque.update({
         where: { id: estoqueId },
         data: { quantidade: novoSaldo }
       });
 
-      // 4. Se for demonstração, cria/soma num local de status "Em Demonstração"
       if (tipoAcao === 'Saída para demonstração') {
         await tx.estoque.create({
           data: { produtoId, quantidade: qtdNum, status: 'Em Demonstração', responsavelId: usuarioId }
         });
       }
 
-      // 5. Registra o histórico da auditoria
       return await tx.movimentacao.create({
         data: {
           produtoId,
