@@ -115,6 +115,35 @@ app.get('/movimentacoes', async (req, res) => {
 });
 
 // ==========================================
+// ROTA DE RESUMO PARA O DASHBOARD
+// ==========================================
+app.get('/dashboard/resumo', async (req, res) => {
+  try {
+    // 1. Conta a quantidade de produtos únicos cadastrados
+    const totalProdutos = await prisma.produto.count();
+
+    // 2. Busca todo o estoque e os preços de custo de cada produto
+    const estoques = await prisma.estoque.findMany({
+      include: { produto: true }
+    });
+
+    // 3. Multiplica a quantidade em estoque pelo preço de custo e soma tudo
+    const custoTotalImobilizado = estoques.reduce((acumulador, item) => {
+      const precoCusto = item.produto?.precoCusto || 0;
+      return acumulador + (item.quantidade * precoCusto);
+    }, 0);
+
+    return res.json({
+      totalItensCadastrados: totalProdutos,
+      custoTotal: custoTotalImobilizado
+    });
+  } catch (error) {
+    console.error("Erro ao carregar resumo do dashboard:", error);
+    return res.status(500).json({ error: 'Erro ao buscar métricas do dashboard.' });
+  }
+});
+
+// ==========================================
 // ROTA DA CAIXA PRETA (AUDITORIA DE EXCLUSÕES)
 // ==========================================
 app.get('/logs-auditoria', async (req, res) => {
