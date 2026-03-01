@@ -114,20 +114,23 @@ app.get('/movimentacoes', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao buscar histórico' }); }
 });
 
+app.get('/logs-auditoria', async (req, res) => {
+  try {
+    const logs = await prisma.logAuditoria.findMany({ orderBy: { dataHora: 'desc' } });
+    return res.json(logs);
+  } catch (error) { 
+    return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); 
+  }
+});
+
 // ==========================================
 // ROTA DE RESUMO PARA O DASHBOARD
 // ==========================================
 app.get('/dashboard/resumo', async (req, res) => {
   try {
-    // 1. Conta a quantidade de produtos únicos cadastrados
     const totalProdutos = await prisma.produto.count();
+    const estoques = await prisma.estoque.findMany({ include: { produto: true } });
 
-    // 2. Busca todo o estoque e os preços de custo de cada produto
-    const estoques = await prisma.estoque.findMany({
-      include: { produto: true }
-    });
-
-    // 3. Multiplica a quantidade em estoque pelo preço de custo e soma tudo
     const custoTotalImobilizado = estoques.reduce((acumulador, item) => {
       const precoCusto = item.produto?.precoCusto || 0;
       return acumulador + (item.quantidade * precoCusto);
@@ -144,30 +147,17 @@ app.get('/dashboard/resumo', async (req, res) => {
 });
 
 // ==========================================
-// ROTA DA CAIXA PRETA (AUDITORIA DE EXCLUSÕES)
-// ==========================================
-app.get('/logs-auditoria', async (req, res) => {
-  try {
-    const logs = await prisma.logAuditoria.findMany({ 
-      orderBy: { dataHora: 'desc' } 
-    });
-    return res.json(logs);
-  } catch (error) { 
-    return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); 
-  }
-});
-
-// ==========================================
 // ROTAS DE CADASTRO (POST) E EDIÇÃO (PUT) DE PRODUTOS
 // ==========================================
 app.post('/produtos', async (req, res) => {
   try {
-    const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId } = req.body;
+    const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
     const novoProduto = await prisma.produto.create({ 
       data: { 
         sku, nome, descricao: descricao || null, codigoBarras: codigoBarras || null, categoriaId, tipo: tipo || 'ACABADO', 
         precoCusto: precoCusto || 0, precoVenda: precoVenda || 0,
-        lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null
+        lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null,
+        dataCadastro: dataCadastro ? new Date(dataCadastro) : new Date()
       } 
     });
     return res.status(201).json(novoProduto);
@@ -176,21 +166,14 @@ app.post('/produtos', async (req, res) => {
 
 app.put('/produtos/:id', async (req, res) => {
   try {
-    const { sku, nome, tipo, categoriaId, descricao, codigoBarras, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId } = req.body;
+    const { sku, nome, tipo, categoriaId, descricao, codigoBarras, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
     const atualizado = await prisma.produto.update({
       where: { id: req.params.id },
       data: { 
-        sku, 
-        nome, 
-        tipo, 
-        categoriaId, 
-        descricao: descricao || null, 
-        codigoBarras: codigoBarras || null, 
-        precoCusto: precoCusto || 0, 
-        precoVenda: precoVenda || 0,
-        lote: lote || null, 
-        enderecoLocalizacao: enderecoLocalizacao || null, 
-        fornecedorId: fornecedorId || null
+        sku, nome, tipo, categoriaId, descricao: descricao || null, codigoBarras: codigoBarras || null, 
+        precoCusto: precoCusto || 0, precoVenda: precoVenda || 0,
+        lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null,
+        dataCadastro: dataCadastro ? new Date(dataCadastro) : undefined
       }
     });
     return res.json(atualizado);
@@ -218,7 +201,6 @@ app.delete('/produtos/:id', async (req, res) => {
     if (!produto) return res.status(404).json({ error: 'Produto não encontrado.' });
     const nomeResponsavel = usuario ? usuario.nome : 'Sistema / Desconhecido';
 
-    // A Mágica da Cascata Segura
     await prisma.$transaction([
       prisma.logAuditoria.create({
         data: {
@@ -241,7 +223,7 @@ app.delete('/produtos/:id', async (req, res) => {
   }
 });
 
-// Outras rotas básicas (Categorias, Usuarios, Locais, Estoque)...
+// Outras rotas básicas
 app.post('/categorias', async (req, res) => {
   try { const nova = await prisma.categoria.create({ data: req.body }); return res.status(201).json(nova); } 
   catch (error) { return res.status(500).json({ error: 'Erro ao criar' }); }
@@ -310,7 +292,7 @@ app.put('/pedidos-compra/:id/receber', async (req, res) => {
 });
 
 // ==========================================
-// A NOVA SUPER ROTA INTELIGENTE DE MOVIMENTAÇÃO
+// ROTA INTELIGENTE DE MOVIMENTAÇÃO
 // ==========================================
 app.post('/movimentacoes/operacao', async (req, res) => {
   try {

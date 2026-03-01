@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql" // Banco de dados na nuvem
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -43,11 +43,11 @@ model Produto {
   precoCusto          Float?         @default(0)
   precoVenda          Float?         @default(0)
   
-  // ==========================================
-  // NOVOS CAMPOS SOLICITADOS PELA GESTÃO
-  // ==========================================
+  // DATA DE CADASTRO ADICIONADA AQUI
+  dataCadastro        DateTime       @default(now()) 
+  
   lote                String?
-  enderecoLocalizacao String?        // Ex: R-01-P02-C01
+  enderecoLocalizacao String?        
   fornecedorId        String?
   fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
   
@@ -56,7 +56,6 @@ model Produto {
   estoques            Estoque[]
   movimentacoes       Movimentacao[]
   
-  // RELAÇÃO COM AS COMPRAS
   pedidosCompra       PedidoCompra[]
 }
 
@@ -101,9 +100,6 @@ model Fornecedor {
   pedidosCompra PedidoCompra[]
 }
 
-// ==========================================
-// MÓDULO SUPPLY CHAIN (COMPRAS)
-// ==========================================
 model PedidoCompra {
   id           String      @id @default(uuid())
   fornecedorId String
@@ -119,9 +115,7 @@ model PedidoCompra {
   updatedAt    DateTime    @updatedAt
 }
 
-// ==========================================
 // CAIXA PRETA DE AUDITORIA
-// ==========================================
 model LogAuditoria {
   id          String   @id @default(uuid())
   acao        String
