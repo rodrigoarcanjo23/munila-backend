@@ -58,14 +58,8 @@ async function gerarCodigoPedidoCompra(): Promise<string> {
   return `PC${numeroFormatado}${anoAtual}`;
 }
 
-// ==========================================
-// MÓDULO DE FORNECEDORES
-// ==========================================
 app.use('/fornecedores', fornecedorRoutes);
 
-// ==========================================
-// ROTA DE AUTENTICAÇÃO
-// ==========================================
 app.post('/login', async (req, res) => {
   try {
     const { email, senha } = req.body;
@@ -75,9 +69,6 @@ app.post('/login', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro interno no login.' }); }
 });
 
-// ==========================================
-// ROTAS DE CONSULTA (GET)
-// ==========================================
 app.get('/categorias', async (req, res) => {
   try { return res.json(await prisma.categoria.findMany()); } 
   catch (error) { return res.status(500).json({ error: 'Erro ao buscar categorias' }); }
@@ -118,13 +109,11 @@ app.get('/logs-auditoria', async (req, res) => {
   try {
     const logs = await prisma.logAuditoria.findMany({ orderBy: { dataHora: 'desc' } });
     return res.json(logs);
-  } catch (error) { 
-    return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); 
-  }
+  } catch (error) { return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); }
 });
 
 // ==========================================
-// ROTA DE RESUMO PARA O DASHBOARD
+// ROTA DE RESUMO PARA O DASHBOARD (ATUALIZADA)
 // ==========================================
 app.get('/dashboard/resumo', async (req, res) => {
   try {
@@ -136,12 +125,18 @@ app.get('/dashboard/resumo', async (req, res) => {
       return acumulador + (item.quantidade * precoCusto);
     }, 0);
 
+    // Busca o total de itens com status de Ruptura (Perdas/Avarias)
+    const totaisRuptura = await prisma.estoque.aggregate({
+      where: { status: 'Ruptura' },
+      _sum: { quantidade: true }
+    });
+
     return res.json({
       totalItensCadastrados: totalProdutos,
-      custoTotal: custoTotalImobilizado
+      custoTotal: custoTotalImobilizado,
+      totalRupturas: totaisRuptura._sum.quantidade || 0
     });
   } catch (error) {
-    console.error("Erro ao carregar resumo do dashboard:", error);
     return res.status(500).json({ error: 'Erro ao buscar métricas do dashboard.' });
   }
 });
@@ -152,6 +147,16 @@ app.get('/dashboard/resumo', async (req, res) => {
 app.post('/produtos', async (req, res) => {
   try {
     const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
+    
+    // REGRA DE SEGURANÇA: Verifica se SKU ou Código de Barras já existem
+    const skuExistente = await prisma.produto.findUnique({ where: { sku } });
+    if (skuExistente) return res.status(400).json({ error: `O SKU '${sku}' já está cadastrado no sistema.` });
+
+    if (codigoBarras) {
+      const cbExistente = await prisma.produto.findUnique({ where: { codigoBarras } });
+      if (cbExistente) return res.status(400).json({ error: `O Código de Barras '${codigoBarras}' já está sendo utilizado.` });
+    }
+
     const novoProduto = await prisma.produto.create({ 
       data: { 
         sku, nome, descricao: descricao || null, codigoBarras: codigoBarras || null, categoriaId, tipo: tipo || 'ACABADO', 
@@ -167,6 +172,16 @@ app.post('/produtos', async (req, res) => {
 app.put('/produtos/:id', async (req, res) => {
   try {
     const { sku, nome, tipo, categoriaId, descricao, codigoBarras, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
+    
+    // REGRA DE SEGURANÇA PARA EDIÇÃO
+    const skuExistente = await prisma.produto.findUnique({ where: { sku } });
+    if (skuExistente && skuExistente.id !== req.params.id) return res.status(400).json({ error: `O SKU '${sku}' pertence a outro produto.` });
+
+    if (codigoBarras) {
+      const cbExistente = await prisma.produto.findUnique({ where: { codigoBarras } });
+      if (cbExistente && cbExistente.id !== req.params.id) return res.status(400).json({ error: `O Código de Barras '${codigoBarras}' pertence a outro produto.` });
+    }
+
     const atualizado = await prisma.produto.update({
       where: { id: req.params.id },
       data: { 
@@ -177,23 +192,16 @@ app.put('/produtos/:id', async (req, res) => {
       }
     });
     return res.json(atualizado);
-  } catch (error) { 
-    console.error("Erro ao atualizar produto:", error);
-    return res.status(500).json({ error: 'Erro ao atualizar produto' }); 
-  }
+  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar produto' }); }
 });
 
-// ==========================================
 // EXCLUSÃO EM CASCATA COM AUDITORIA
-// ==========================================
 app.delete('/produtos/:id', async (req, res) => {
   try {
     const produtoId = req.params.id;
     const { motivo, usuarioId } = req.body;
 
-    if (!motivo || !usuarioId) {
-      return res.status(400).json({ error: 'Motivo e identificação do utilizador são obrigatórios para exclusão.' });
-    }
+    if (!motivo || !usuarioId) return res.status(400).json({ error: 'Motivo e identificação do utilizador são obrigatórios para exclusão.' });
 
     const produto = await prisma.produto.findUnique({ where: { id: produtoId } });
     const usuario = await prisma.usuario.findUnique({ where: { id: usuarioId } });
@@ -203,12 +211,7 @@ app.delete('/produtos/:id', async (req, res) => {
 
     await prisma.$transaction([
       prisma.logAuditoria.create({
-        data: {
-          acao: 'EXCLUSÃO DE PRODUTO',
-          itemNome: `[${produto.sku}] ${produto.nome}`,
-          usuarioNome: nomeResponsavel,
-          motivo: motivo
-        }
+        data: { acao: 'EXCLUSÃO DE PRODUTO', itemNome: `[${produto.sku}] ${produto.nome}`, usuarioNome: nomeResponsavel, motivo: motivo }
       }),
       prisma.pedidoCompra.deleteMany({ where: { produtoId } }),
       prisma.movimentacao.deleteMany({ where: { produtoId } }),
@@ -217,10 +220,7 @@ app.delete('/produtos/:id', async (req, res) => {
     ]);
 
     return res.status(204).send();
-  } catch (error) {
-    console.error("Erro na exclusão em cascata:", error);
-    return res.status(500).json({ error: 'Erro interno ao processar a exclusão auditável.' });
-  }
+  } catch (error) { return res.status(500).json({ error: 'Erro interno ao processar a exclusão auditável.' }); }
 });
 
 // Outras rotas básicas
@@ -261,18 +261,34 @@ app.post('/pedidos-compra', async (req, res) => {
       data: { codigo: codigoGerado, fornecedorId, produtoId, quantidade: Number(quantidade), custoTotal: Number(custoTotal), dataPrevisao: dataPrevisao ? new Date(dataPrevisao) : null, status: 'Pendente' },
       include: { fornecedor: true, produto: true }
     });
-
-    try {
-      const emailFornecedor = novoPedido.fornecedor?.email || '';
-      const destinatarios = [emailFornecedor, 'gerencia.producao@viapro.com', 'pcp@viapro.com', 'supplychain@viapro.com'].filter(Boolean).join(', ');
-      transporter.sendMail({
-        from: process.env.EMAIL_USER || 'viapro@seu-dominio.com', to: destinatarios, subject: `[ViaPro ERP] Novo Pedido de Compra: ${codigoGerado}`,
-        text: `Olá, ${novoPedido.fornecedor?.nomeEmpresa}!\n\nUm novo Pedido de Compra foi gerado.\n\n📄 Código: ${codigoGerado}\n📦 Produto: ${novoPedido.produto?.nome}\n🔢 Quantidade: ${quantidade} un\n\nAtenciosamente,\nEquipe ViaPro`
-      }).catch(console.error);
-    } catch (e) {}
-
     return res.status(201).json(novoPedido);
   } catch (error) { return res.status(500).json({ error: 'Erro ao emitir pedido.' }); }
+});
+
+// NOVO: ROTA DE EDIÇÃO DE PEDIDO DE COMPRA
+app.put('/pedidos-compra/:id', async (req, res) => {
+  try {
+    const { fornecedorId, produtoId, quantidade, custoTotal, dataPrevisao } = req.body;
+    const pedido = await prisma.pedidoCompra.findUnique({ where: { id: req.params.id } });
+    if (pedido?.status === 'Recebido') return res.status(400).json({ error: 'Não é possível editar um pedido que já foi recebido no estoque.' });
+
+    const atualizado = await prisma.pedidoCompra.update({
+      where: { id: req.params.id },
+      data: { fornecedorId, produtoId, quantidade: Number(quantidade), custoTotal: Number(custoTotal), dataPrevisao: dataPrevisao ? new Date(dataPrevisao) : null }
+    });
+    return res.json(atualizado);
+  } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar pedido.' }); }
+});
+
+// NOVO: ROTA DE EXCLUSÃO DE PEDIDO DE COMPRA
+app.delete('/pedidos-compra/:id', async (req, res) => {
+  try {
+    const pedido = await prisma.pedidoCompra.findUnique({ where: { id: req.params.id } });
+    if (pedido?.status === 'Recebido') return res.status(400).json({ error: 'Não é possível excluir um pedido que já foi recebido no estoque. Faça uma devolução.' });
+
+    await prisma.pedidoCompra.delete({ where: { id: req.params.id } });
+    return res.status(204).send();
+  } catch (error) { return res.status(500).json({ error: 'Erro ao excluir pedido.' }); }
 });
 
 app.put('/pedidos-compra/:id/receber', async (req, res) => {
@@ -292,7 +308,7 @@ app.put('/pedidos-compra/:id/receber', async (req, res) => {
 });
 
 // ==========================================
-// ROTA INTELIGENTE DE MOVIMENTAÇÃO
+// ROTA INTELIGENTE DE MOVIMENTAÇÃO (COM RUPTURAS/PERDAS)
 // ==========================================
 app.post('/movimentacoes/operacao', async (req, res) => {
   try {
@@ -314,28 +330,38 @@ app.post('/movimentacoes/operacao', async (req, res) => {
         if (estoque.quantidade < qtdNum) throw new Error("Saldo insuficiente no armazém para esta saída.");
         novoSaldo -= qtdNum;
         codigoGerado = await gerarCodigoRequisicao('RS');
-      } else {
+        
+        if (tipoAcao === 'Saída para demonstração') {
+          await tx.estoque.create({ data: { produtoId, quantidade: qtdNum, status: 'Em Demonstração', responsavelId: usuarioId } });
+        }
+      } 
+      // === NOVA LÓGICA DE PERDAS E AVARIAS ===
+      else if (tipoAcao === 'Perdas/Avarias') {
+        if (estoque.quantidade < qtdNum) throw new Error("Não é possível registrar perda maior que o saldo disponível.");
+        novoSaldo -= qtdNum;
+        codigoGerado = await gerarCodigoRequisicao('RS');
+
+        // Procura se já existe um saldo de "Ruptura" para esse produto para somar, se não, cria.
+        const estoqueRuptura = await tx.estoque.findFirst({ where: { produtoId, status: 'Ruptura' } });
+        if (estoqueRuptura) {
+          await tx.estoque.update({ where: { id: estoqueRuptura.id }, data: { quantidade: estoqueRuptura.quantidade + qtdNum } });
+        } else {
+          await tx.estoque.create({ data: { produtoId, quantidade: qtdNum, status: 'Ruptura' } });
+        }
+      }
+      else {
         throw new Error("Tipo de ação não reconhecido pelo sistema.");
       }
 
+      // Atualiza o saldo do estoque principal (Disponível)
       await tx.estoque.update({
         where: { id: estoqueId },
         data: { quantidade: novoSaldo }
       });
 
-      if (tipoAcao === 'Saída para demonstração') {
-        await tx.estoque.create({
-          data: { produtoId, quantidade: qtdNum, status: 'Em Demonstração', responsavelId: usuarioId }
-        });
-      }
-
       return await tx.movimentacao.create({
         data: {
-          produtoId,
-          usuarioId,
-          quantidade: qtdNum,
-          tipoAcao,
-          codigo: codigoGerado,
+          produtoId, usuarioId, quantidade: qtdNum, tipoAcao, codigo: codigoGerado,
           observacao: observacao || `${tipoAcao} registrada.`
         }
       });
