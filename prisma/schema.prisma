@@ -57,6 +57,23 @@ model Produto {
   movimentacoes       Movimentacao[]
   
   pedidosCompra       PedidoCompra[]
+
+  // ✨ NOVOS CAMPOS PARA A RECEITA DE PRODUÇÃO ✨
+  receitaParaOutros   Composicao[]   @relation("ProdutoFilho")
+  ingredientes        Composicao[]   @relation("ProdutoPai")
+}
+
+// ✨ NOVO MODELO: A TABELA DE RECEITA DE PRODUÇÃO ✨
+model Composicao {
+  id             String  @id @default(uuid())
+  produtoPaiId   String  // O Produto Final (Nacional/Montado)
+  produtoFilhoId String  // A Matéria-Prima (Importado)
+  quantidade     Int     // Quantidade necessária para montar 1 unidade
+
+  produtoPai     Produto @relation("ProdutoPai", fields: [produtoPaiId], references: [id], onDelete: Cascade)
+  produtoFilho   Produto @relation("ProdutoFilho", fields: [produtoFilhoId], references: [id])
+
+  @@unique([produtoPaiId, produtoFilhoId]) // Evita duplicar a mesma matéria-prima na mesma receita
 }
 
 model Estoque {

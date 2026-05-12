@@ -84,9 +84,16 @@ app.get('/usuarios', async (req, res) => {
   catch (error) { return res.status(500).json({ error: 'Erro ao buscar usuários' }); }
 });
 
+// ✨ ATUALIZADO: Agora busca as receitas junto com os produtos ✨
 app.get('/produtos', async (req, res) => {
   try {
-    const produtos = await prisma.produto.findMany({ include: { categoria: true, fornecedor: true } });
+    const produtos = await prisma.produto.findMany({ 
+      include: { 
+        categoria: true, 
+        fornecedor: true,
+        ingredientes: { include: { produtoFilho: true } } // Traz a receita (Composicao)
+      } 
+    });
     return res.json(produtos);
   } catch (error) { return res.status(500).json({ error: 'Erro ao buscar produtos' }); }
 });
@@ -112,9 +119,6 @@ app.get('/logs-auditoria', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao buscar histórico de exclusões.' }); }
 });
 
-// ==========================================
-// ROTA DE RESUMO PARA O DASHBOARD (ATUALIZADA)
-// ==========================================
 app.get('/dashboard/resumo', async (req, res) => {
   try {
     const totalProdutos = await prisma.produto.count();
@@ -125,7 +129,6 @@ app.get('/dashboard/resumo', async (req, res) => {
       return acumulador + (item.quantidade * precoCusto);
     }, 0);
 
-    // Busca o total de itens com status de Ruptura (Perdas/Avarias)
     const totaisRuptura = await prisma.estoque.aggregate({
       where: { status: 'Ruptura' },
       _sum: { quantidade: true }
@@ -141,14 +144,11 @@ app.get('/dashboard/resumo', async (req, res) => {
   }
 });
 
-// ==========================================
-// ROTAS DE CADASTRO (POST) E EDIÇÃO (PUT) DE PRODUTOS
-// ==========================================
+// ✨ ATUALIZADO: Agora salva a receita (ingredientes) no momento do cadastro ✨
 app.post('/produtos', async (req, res) => {
   try {
-    const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
+    const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro, ingredientes } = req.body;
     
-    // REGRA DE SEGURANÇA: Verifica se SKU ou Código de Barras já existem
     const skuExistente = await prisma.produto.findUnique({ where: { sku } });
     if (skuExistente) return res.status(400).json({ error: `O SKU '${sku}' já está cadastrado no sistema.` });
 
@@ -162,7 +162,14 @@ app.post('/produtos', async (req, res) => {
         sku, nome, descricao: descricao || null, codigoBarras: codigoBarras || null, categoriaId, tipo: tipo || 'ACABADO', 
         precoCusto: precoCusto || 0, precoVenda: precoVenda || 0,
         lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null,
-        dataCadastro: dataCadastro ? new Date(dataCadastro) : new Date()
+        dataCadastro: dataCadastro ? new Date(dataCadastro) : new Date(),
+        // Grava a receita se existir
+        ingredientes: ingredientes && ingredientes.length > 0 ? {
+          create: ingredientes.map((ing: any) => ({
+            produtoFilhoId: ing.produtoFilhoId,
+            quantidade: ing.quantidade
+          }))
+        } : undefined
       } 
     });
     return res.status(201).json(novoProduto);
@@ -173,7 +180,6 @@ app.put('/produtos/:id', async (req, res) => {
   try {
     const { sku, nome, tipo, categoriaId, descricao, codigoBarras, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro } = req.body;
     
-    // REGRA DE SEGURANÇA PARA EDIÇÃO
     const skuExistente = await prisma.produto.findUnique({ where: { sku } });
     if (skuExistente && skuExistente.id !== req.params.id) return res.status(400).json({ error: `O SKU '${sku}' pertence a outro produto.` });
 
@@ -195,7 +201,7 @@ app.put('/produtos/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar produto' }); }
 });
 
-// EXCLUSÃO EM CASCATA COM AUDITORIA
+// ✨ ATUALIZADO: Limpa a tabela de Composição antes de excluir o produto ✨
 app.delete('/produtos/:id', async (req, res) => {
   try {
     const produtoId = req.params.id;
@@ -213,6 +219,9 @@ app.delete('/produtos/:id', async (req, res) => {
       prisma.logAuditoria.create({
         data: { acao: 'EXCLUSÃO DE PRODUTO', itemNome: `[${produto.sku}] ${produto.nome}`, usuarioNome: nomeResponsavel, motivo: motivo }
       }),
+      // Remove dependências da receita
+      prisma.composicao.deleteMany({ where: { produtoPaiId: produtoId } }),
+      prisma.composicao.deleteMany({ where: { produtoFilhoId: produtoId } }),
       prisma.pedidoCompra.deleteMany({ where: { produtoId } }),
       prisma.movimentacao.deleteMany({ where: { produtoId } }),
       prisma.estoque.deleteMany({ where: { produtoId } }),
@@ -223,7 +232,6 @@ app.delete('/produtos/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro interno ao processar a exclusão auditável.' }); }
 });
 
-// Outras rotas básicas
 app.post('/categorias', async (req, res) => {
   try { const nova = await prisma.categoria.create({ data: req.body }); return res.status(201).json(nova); } 
   catch (error) { return res.status(500).json({ error: 'Erro ao criar' }); }
@@ -245,9 +253,6 @@ app.post('/estoque', async (req, res) => {
   catch (error) { return res.status(500).json({ error: 'Erro ao criar estoque' }); }
 });
 
-// ==========================================
-// MÓDULO SUPPLY CHAIN: PEDIDOS DE COMPRA
-// ==========================================
 app.get('/pedidos-compra', async (req, res) => {
   try { return res.json(await prisma.pedidoCompra.findMany({ include: { fornecedor: true, produto: true }, orderBy: { createdAt: 'desc' } })); } 
   catch (error) { return res.status(500).json({ error: 'Erro ao buscar pedidos.' }); }
@@ -265,7 +270,6 @@ app.post('/pedidos-compra', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao emitir pedido.' }); }
 });
 
-// NOVO: ROTA DE EDIÇÃO DE PEDIDO DE COMPRA
 app.put('/pedidos-compra/:id', async (req, res) => {
   try {
     const { fornecedorId, produtoId, quantidade, custoTotal, dataPrevisao } = req.body;
@@ -280,7 +284,6 @@ app.put('/pedidos-compra/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar pedido.' }); }
 });
 
-// NOVO: ROTA DE EXCLUSÃO DE PEDIDO DE COMPRA
 app.delete('/pedidos-compra/:id', async (req, res) => {
   try {
     const pedido = await prisma.pedidoCompra.findUnique({ where: { id: req.params.id } });
@@ -307,9 +310,6 @@ app.put('/pedidos-compra/:id/receber', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao receber a mercadoria.' }); }
 });
 
-// ==========================================
-// ROTA INTELIGENTE DE MOVIMENTAÇÃO (COM RUPTURAS/PERDAS)
-// ==========================================
 app.post('/movimentacoes/operacao', async (req, res) => {
   try {
     const { produtoId, usuarioId, estoqueId, quantidade, tipoAcao, observacao } = req.body;
@@ -335,13 +335,11 @@ app.post('/movimentacoes/operacao', async (req, res) => {
           await tx.estoque.create({ data: { produtoId, quantidade: qtdNum, status: 'Em Demonstração', responsavelId: usuarioId } });
         }
       } 
-      // === NOVA LÓGICA DE PERDAS E AVARIAS ===
       else if (tipoAcao === 'Perdas/Avarias') {
         if (estoque.quantidade < qtdNum) throw new Error("Não é possível registrar perda maior que o saldo disponível.");
         novoSaldo -= qtdNum;
         codigoGerado = await gerarCodigoRequisicao('RS');
 
-        // Procura se já existe um saldo de "Ruptura" para esse produto para somar, se não, cria.
         const estoqueRuptura = await tx.estoque.findFirst({ where: { produtoId, status: 'Ruptura' } });
         if (estoqueRuptura) {
           await tx.estoque.update({ where: { id: estoqueRuptura.id }, data: { quantidade: estoqueRuptura.quantidade + qtdNum } });
@@ -353,7 +351,6 @@ app.post('/movimentacoes/operacao', async (req, res) => {
         throw new Error("Tipo de ação não reconhecido pelo sistema.");
       }
 
-      // Atualiza o saldo do estoque principal (Disponível)
       await tx.estoque.update({
         where: { id: estoqueId },
         data: { quantidade: novoSaldo }
@@ -370,6 +367,89 @@ app.post('/movimentacoes/operacao', async (req, res) => {
     return res.status(201).json(resultado);
   } catch (error: any) { 
     return res.status(400).json({ error: error.message || 'Erro ao registrar movimentação.' }); 
+  }
+});
+
+// ✨ NOVA ROTA MESTRE: ORDEM DE PRODUÇÃO ✨
+app.post('/producao/executar', async (req, res) => {
+  const { produtoFinalId, quantidadeProduzir, usuarioId } = req.body;
+
+  try {
+    const resultado = await prisma.$transaction(async (tx) => {
+      // 1. Procura a receita do produto
+      const composicao = await tx.composicao.findMany({
+        where: { produtoPaiId: produtoFinalId },
+        include: { produtoFilho: true }
+      });
+
+      if (composicao.length === 0) {
+        throw new Error("Este produto não possui uma receita de produção configurada.");
+      }
+
+      // 2. Valida se tem estoque suficiente de cada componente
+      for (const item of composicao) {
+        const qtdNecessaria = item.quantidade * quantidadeProduzir;
+        const estoqueItem = await tx.estoque.findFirst({
+          where: { produtoId: item.produtoFilhoId, status: 'Disponível' }
+        });
+
+        if (!estoqueItem || estoqueItem.quantidade < qtdNecessaria) {
+          throw new Error(`Estoque insuficiente de [${item.produtoFilho.sku}]. Necessário: ${qtdNecessaria}, Disponível: ${estoqueItem?.quantidade || 0}`);
+        }
+
+        // 3. Dá baixa nos componentes
+        await tx.estoque.update({
+          where: { id: estoqueItem.id },
+          data: { quantidade: { decrement: qtdNecessaria } }
+        });
+
+        // 4. Registra a saída da matéria-prima
+        await tx.movimentacao.create({
+          data: {
+            produtoId: item.produtoFilhoId,
+            usuarioId,
+            quantidade: qtdNecessaria,
+            tipoAcao: 'Saída para produção',
+            observacao: `Matéria-prima consumida para lote de produção`
+          }
+        });
+      }
+
+      // 5. Dá entrada no produto final (Nacional/Montado)
+      const estoqueFinal = await tx.estoque.findFirst({
+        where: { produtoId: produtoFinalId, status: 'Disponível' }
+      });
+
+      if (estoqueFinal) {
+        await tx.estoque.update({
+          where: { id: estoqueFinal.id },
+          data: { quantidade: { increment: quantidadeProduzir } }
+        });
+      } else {
+        await tx.estoque.create({
+          data: { produtoId: produtoFinalId, quantidade: quantidadeProduzir, status: 'Disponível' }
+        });
+      }
+
+      // 6. Registra a entrada do produto final
+      const codigoGerado = await gerarCodigoRequisicao('RE');
+      await tx.movimentacao.create({
+        data: {
+          produtoId: produtoFinalId,
+          usuarioId,
+          quantidade: quantidadeProduzir,
+          tipoAcao: 'Entrada por produção',
+          codigo: codigoGerado,
+          observacao: `Lote de produção finalizado internamente.`
+        }
+      });
+
+      return { success: true, mensagem: `Produção de ${quantidadeProduzir} unidades finalizada com sucesso.` };
+    });
+
+    res.json(resultado);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
   }
 });
 
