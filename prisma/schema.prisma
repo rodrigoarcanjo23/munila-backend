@@ -32,7 +32,7 @@ model Usuario {
   estoques      Estoque[]
   movimentacoes Movimentacao[]
 
-  // ✨ NOVAS RELAÇÕES PARA O MÓDULO WMS (SEPARAÇÃO) ✨
+  // ✨ RELAÇÕES PARA O MÓDULO WMS (SEPARAÇÃO) ✨
   ordensSolicitadas OrdemTransferencia[] @relation("OrdensSolicitadas")
   ordensSeparadas   OrdemTransferencia[] @relation("OrdensSeparadas")
 }
@@ -64,7 +64,7 @@ model Produto {
   receitaParaOutros   Composicao[]   @relation("ProdutoFilho")
   ingredientes        Composicao[]   @relation("ProdutoPai")
 
-  // ✨ NOVA RELAÇÃO PARA O MÓDULO WMS (SEPARAÇÃO) ✨
+  // ✨ RELAÇÃO PARA O MÓDULO WMS (SEPARAÇÃO) ✨
   itensTransferencia  ItemOrdemTransferencia[]
 }
 
@@ -154,6 +154,9 @@ model OrdemTransferencia {
   id            String    @id @default(uuid())
   codigo        String    @unique // Ex: OS-00124
   status        String    @default("Pendente") // Pendente, Em Separação, Concluída
+  
+  // ✨ A NOVA LINHA MÁGICA PARA DEFINIR O TIPO DE MOVIMENTAÇÃO ✨
+  tipo          String    @default("SAIDA") // Pode ser: ENTRADA, SAIDA ou DEVOLUCAO
   
   // Quem pediu (Escritório/Fábrica)
   solicitanteId String
