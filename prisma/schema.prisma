@@ -31,6 +31,10 @@ model Usuario {
   senha         String
   estoques      Estoque[]
   movimentacoes Movimentacao[]
+
+  // ✨ NOVAS RELAÇÕES PARA O MÓDULO WMS (SEPARAÇÃO) ✨
+  ordensSolicitadas OrdemTransferencia[] @relation("OrdensSolicitadas")
+  ordensSeparadas   OrdemTransferencia[] @relation("OrdensSeparadas")
 }
 
 model Produto {
@@ -43,7 +47,6 @@ model Produto {
   precoCusto          Float?         @default(0)
   precoVenda          Float?         @default(0)
   
-  // DATA DE CADASTRO ADICIONADA AQUI
   dataCadastro        DateTime       @default(now()) 
   
   lote                String?
@@ -58,12 +61,13 @@ model Produto {
   
   pedidosCompra       PedidoCompra[]
 
-  // ✨ NOVOS CAMPOS PARA A RECEITA DE PRODUÇÃO ✨
   receitaParaOutros   Composicao[]   @relation("ProdutoFilho")
   ingredientes        Composicao[]   @relation("ProdutoPai")
+
+  // ✨ NOVA RELAÇÃO PARA O MÓDULO WMS (SEPARAÇÃO) ✨
+  itensTransferencia  ItemOrdemTransferencia[]
 }
 
-// ✨ NOVO MODELO: A TABELA DE RECEITA DE PRODUÇÃO ✨
 model Composicao {
   id             String  @id @default(uuid())
   produtoPaiId   String  // O Produto Final (Nacional/Montado)
@@ -73,7 +77,7 @@ model Composicao {
   produtoPai     Produto @relation("ProdutoPai", fields: [produtoPaiId], references: [id], onDelete: Cascade)
   produtoFilho   Produto @relation("ProdutoFilho", fields: [produtoFilhoId], references: [id])
 
-  @@unique([produtoPaiId, produtoFilhoId]) // Evita duplicar a mesma matéria-prima na mesma receita
+  @@unique([produtoPaiId, produtoFilhoId]) 
 }
 
 model Estoque {
@@ -104,14 +108,14 @@ model Movimentacao {
 }
 
 model Fornecedor {
-  id            String         @id @default(uuid())
-  nomeEmpresa   String
-  cnpj          String?
-  contatoNome   String?
-  telefone      String?
-  email         String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id          String         @id @default(uuid())
+  nomeEmpresa String
+  cnpj        String?
+  contatoNome String?
+  telefone    String?
+  email       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   produtos      Produto[]
   pedidosCompra PedidoCompra[]
@@ -140,4 +144,39 @@ model LogAuditoria {
   usuarioNome String
   motivo      String   @db.Text
   dataHora    DateTime @default(now())
+}
+
+// ==========================================
+// MÓDULO WMS: SEPARAÇÃO E TRANSFERÊNCIA
+// ==========================================
+
+model OrdemTransferencia {
+  id            String    @id @default(uuid())
+  codigo        String    @unique // Ex: OS-00124
+  status        String    @default("Pendente") // Pendente, Em Separação, Concluída
+  
+  // Quem pediu (Escritório/Fábrica)
+  solicitanteId String
+  solicitante   Usuario   @relation("OrdensSolicitadas", fields: [solicitanteId], references: [id])
+  
+  // Quem está separando (Armazém)
+  separadorId   String?
+  separador     Usuario?  @relation("OrdensSeparadas", fields: [separadorId], references: [id])
+
+  itens         ItemOrdemTransferencia[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model ItemOrdemTransferencia {
+  id               String             @id @default(uuid())
+  quantidade       Int
+  marcado          Boolean            @default(false) // O "quadradinho" da conferência
+  
+  ordemId          String
+  ordem            OrdemTransferencia @relation(fields: [ordemId], references: [id], onDelete: Cascade)
+  
+  produtoId        String
+  produto          Produto            @relation(fields: [produtoId], references: [id])
 }
