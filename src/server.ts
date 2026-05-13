@@ -58,6 +58,23 @@ async function gerarCodigoPedidoCompra(): Promise<string> {
   return `PC${numeroFormatado}${anoAtual}`;
 }
 
+async function gerarCodigoOS(): Promise<string> {
+  const anoAtual = new Date().getFullYear().toString().slice(-2);
+  const ultimaOS = await prisma.ordemTransferencia.findFirst({
+    where: { codigo: { startsWith: 'OS', endsWith: anoAtual } },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  let sequencia = 1;
+  if (ultimaOS && ultimaOS.codigo) {
+    const numeroExtraido = ultimaOS.codigo.slice(2, -2);
+    const numeroAtual = parseInt(numeroExtraido, 10);
+    if (!isNaN(numeroAtual)) sequencia = numeroAtual + 1;
+  }
+  const numeroFormatado = String(sequencia).padStart(4, '0');
+  return `OS${numeroFormatado}${anoAtual}`;
+}
+
 app.use('/fornecedores', fornecedorRoutes);
 
 app.post('/login', async (req, res) => {
@@ -84,7 +101,6 @@ app.get('/usuarios', async (req, res) => {
   catch (error) { return res.status(500).json({ error: 'Erro ao buscar usuários' }); }
 });
 
-// ✨ ATUALIZADO: Agora busca as receitas junto com os produtos ✨
 app.get('/produtos', async (req, res) => {
   try {
     const produtos = await prisma.produto.findMany({ 
@@ -144,7 +160,6 @@ app.get('/dashboard/resumo', async (req, res) => {
   }
 });
 
-// ✨ ATUALIZADO: Agora salva a receita (ingredientes) no momento do cadastro ✨
 app.post('/produtos', async (req, res) => {
   try {
     const { sku, nome, descricao, codigoBarras, categoriaId, tipo, precoCusto, precoVenda, lote, enderecoLocalizacao, fornecedorId, dataCadastro, ingredientes } = req.body;
@@ -163,7 +178,6 @@ app.post('/produtos', async (req, res) => {
         precoCusto: precoCusto || 0, precoVenda: precoVenda || 0,
         lote: lote || null, enderecoLocalizacao: enderecoLocalizacao || null, fornecedorId: fornecedorId || null,
         dataCadastro: dataCadastro ? new Date(dataCadastro) : new Date(),
-        // Grava a receita se existir
         ingredientes: ingredientes && ingredientes.length > 0 ? {
           create: ingredientes.map((ing: any) => ({
             produtoFilhoId: ing.produtoFilhoId,
@@ -201,7 +215,6 @@ app.put('/produtos/:id', async (req, res) => {
   } catch (error) { return res.status(500).json({ error: 'Erro ao atualizar produto' }); }
 });
 
-// ✨ ATUALIZADO: Limpa a tabela de Composição antes de excluir o produto ✨
 app.delete('/produtos/:id', async (req, res) => {
   try {
     const produtoId = req.params.id;
@@ -219,7 +232,6 @@ app.delete('/produtos/:id', async (req, res) => {
       prisma.logAuditoria.create({
         data: { acao: 'EXCLUSÃO DE PRODUTO', itemNome: `[${produto.sku}] ${produto.nome}`, usuarioNome: nomeResponsavel, motivo: motivo }
       }),
-      // Remove dependências da receita
       prisma.composicao.deleteMany({ where: { produtoPaiId: produtoId } }),
       prisma.composicao.deleteMany({ where: { produtoFilhoId: produtoId } }),
       prisma.pedidoCompra.deleteMany({ where: { produtoId } }),
@@ -370,13 +382,11 @@ app.post('/movimentacoes/operacao', async (req, res) => {
   }
 });
 
-// ✨ NOVA ROTA MESTRE: ORDEM DE PRODUÇÃO ✨
 app.post('/producao/executar', async (req, res) => {
   const { produtoFinalId, quantidadeProduzir, usuarioId } = req.body;
 
   try {
     const resultado = await prisma.$transaction(async (tx) => {
-      // 1. Procura a receita do produto
       const composicao = await tx.composicao.findMany({
         where: { produtoPaiId: produtoFinalId },
         include: { produtoFilho: true }
@@ -386,7 +396,6 @@ app.post('/producao/executar', async (req, res) => {
         throw new Error("Este produto não possui uma receita de produção configurada.");
       }
 
-      // 2. Valida se tem estoque suficiente de cada componente
       for (const item of composicao) {
         const qtdNecessaria = item.quantidade * quantidadeProduzir;
         const estoqueItem = await tx.estoque.findFirst({
@@ -397,13 +406,11 @@ app.post('/producao/executar', async (req, res) => {
           throw new Error(`Estoque insuficiente de [${item.produtoFilho.sku}]. Necessário: ${qtdNecessaria}, Disponível: ${estoqueItem?.quantidade || 0}`);
         }
 
-        // 3. Dá baixa nos componentes
         await tx.estoque.update({
           where: { id: estoqueItem.id },
           data: { quantidade: { decrement: qtdNecessaria } }
         });
 
-        // 4. Registra a saída da matéria-prima
         await tx.movimentacao.create({
           data: {
             produtoId: item.produtoFilhoId,
@@ -415,7 +422,6 @@ app.post('/producao/executar', async (req, res) => {
         });
       }
 
-      // 5. Dá entrada no produto final (Nacional/Montado)
       const estoqueFinal = await tx.estoque.findFirst({
         where: { produtoId: produtoFinalId, status: 'Disponível' }
       });
@@ -431,7 +437,6 @@ app.post('/producao/executar', async (req, res) => {
         });
       }
 
-      // 6. Registra a entrada do produto final
       const codigoGerado = await gerarCodigoRequisicao('RE');
       await tx.movimentacao.create({
         data: {
@@ -450,6 +455,128 @@ app.post('/producao/executar', async (req, res) => {
     res.json(resultado);
   } catch (error: any) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// MÓDULO WMS: ROTAS DE SEPARAÇÃO / TRANSFERÊNCIA
+// ==========================================
+
+app.get('/wms/ordens', async (req, res) => {
+  try {
+    const ordens = await prisma.ordemTransferencia.findMany({
+      include: {
+        solicitante: { select: { nome: true } },
+        separador: { select: { nome: true } },
+        itens: { include: { produto: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    return res.json(ordens);
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao buscar ordens de separação.' });
+  }
+});
+
+app.post('/wms/ordens', async (req, res) => {
+  try {
+    const { solicitanteId, itens } = req.body;
+    
+    if (!itens || itens.length === 0) {
+      return res.status(400).json({ error: 'A ordem deve conter pelo menos um item.' });
+    }
+
+    const codigoOS = await gerarCodigoOS();
+
+    const novaOrdem = await prisma.ordemTransferencia.create({
+      data: {
+        codigo: codigoOS,
+        solicitanteId,
+        status: 'Pendente',
+        itens: {
+          create: itens.map((item: any) => ({
+            produtoId: item.produtoId,
+            quantidade: Number(item.quantidade)
+          }))
+        }
+      },
+      include: { itens: true }
+    });
+
+    return res.status(201).json(novaOrdem);
+  } catch (error: any) {
+    return res.status(500).json({ error: 'Erro ao gerar Ordem de Serviço.' });
+  }
+});
+
+app.put('/wms/ordens/:id/status', async (req, res) => {
+  try {
+    const { status, separadorId } = req.body;
+    const ordem = await prisma.ordemTransferencia.update({
+      where: { id: req.params.id },
+      data: { 
+        status,
+        separadorId: separadorId || undefined 
+      }
+    });
+    return res.json(ordem);
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao atualizar o status da OS.' });
+  }
+});
+
+app.post('/wms/ordens/:id/concluir', async (req, res) => {
+  try {
+    const { usuarioId } = req.body; 
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      const ordem = await tx.ordemTransferencia.findUnique({
+        where: { id: req.params.id },
+        include: { itens: true }
+      });
+
+      if (!ordem) throw new Error("Ordem não encontrada.");
+      if (ordem.status === 'Concluída') throw new Error("Esta ordem já foi concluída.");
+
+      for (const item of ordem.itens) {
+        const estoqueExistente = await tx.estoque.findFirst({
+          where: { produtoId: item.produtoId, status: 'Disponível' }
+        });
+
+        if (estoqueExistente) {
+          await tx.estoque.update({
+            where: { id: estoqueExistente.id },
+            data: { quantidade: { increment: item.quantidade } }
+          });
+        } else {
+          await tx.estoque.create({
+            data: { produtoId: item.produtoId, quantidade: item.quantidade, status: 'Disponível' }
+          });
+        }
+
+        await tx.movimentacao.create({
+          data: {
+            produtoId: item.produtoId,
+            usuarioId: usuarioId,
+            quantidade: item.quantidade,
+            tipoAcao: 'Entrada de mercadoria',
+            codigo: ordem.codigo,
+            observacao: `Transferência via OS de Separação ${ordem.codigo}`
+          }
+        });
+      }
+
+      const ordemAtualizada = await tx.ordemTransferencia.update({
+        where: { id: ordem.id },
+        data: { status: 'Concluída', separadorId: usuarioId }
+      });
+
+      return ordemAtualizada;
+    });
+
+    return res.json(resultado);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Erro ao processar a finalização.' });
   }
 });
 
