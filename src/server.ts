@@ -107,7 +107,7 @@ app.get('/produtos', async (req, res) => {
       include: { 
         categoria: true, 
         fornecedor: true,
-        ingredientes: { include: { produtoFilho: true } } // Traz a receita (Composicao)
+        ingredientes: { include: { produtoFilho: true } }
       } 
     });
     return res.json(produtos);
@@ -480,7 +480,7 @@ app.get('/wms/ordens', async (req, res) => {
 
 app.post('/wms/ordens', async (req, res) => {
   try {
-    const { solicitanteId, itens } = req.body;
+    const { solicitanteId, itens, tipo } = req.body; // ✨ AGORA RECEBE O TIPO
     
     if (!itens || itens.length === 0) {
       return res.status(400).json({ error: 'A ordem deve conter pelo menos um item.' });
@@ -493,6 +493,7 @@ app.post('/wms/ordens', async (req, res) => {
         codigo: codigoOS,
         solicitanteId,
         status: 'Pendente',
+        tipo: tipo || 'SAIDA', // ✨ GRAVA NO BANCO
         itens: {
           create: itens.map((item: any) => ({
             produtoId: item.produtoId,
@@ -506,6 +507,26 @@ app.post('/wms/ordens', async (req, res) => {
     return res.status(201).json(novaOrdem);
   } catch (error: any) {
     return res.status(500).json({ error: 'Erro ao gerar Ordem de Serviço.' });
+  }
+});
+
+// ✨ NOVA ROTA: EXCLUSÃO DE ORDEM (CANCELAMENTO) ✨
+app.delete('/wms/ordens/:id', async (req, res) => {
+  try {
+    const ordem = await prisma.ordemTransferencia.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ordem) return res.status(404).json({ error: 'Ordem não encontrada.' });
+    if (ordem.status === 'Concluída') return res.status(400).json({ error: 'Não é possível excluir uma OS que já foi finalizada e registada no estoque.' });
+
+    await prisma.ordemTransferencia.delete({
+      where: { id: req.params.id }
+    });
+
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao excluir a ordem.' });
   }
 });
 
@@ -525,6 +546,7 @@ app.put('/wms/ordens/:id/status', async (req, res) => {
   }
 });
 
+// ✨ ATUALIZADA: LÓGICA MATEMÁTICA ENTRADA/SAIDA/DEVOLUÇÃO ✨
 app.post('/wms/ordens/:id/concluir', async (req, res) => {
   try {
     const { usuarioId } = req.body; 
@@ -543,25 +565,45 @@ app.post('/wms/ordens/:id/concluir', async (req, res) => {
           where: { produtoId: item.produtoId, status: 'Disponível' }
         });
 
-        if (estoqueExistente) {
+        let tipoAcaoAuditoria = 'Saída de mercadoria';
+        let observacaoAuditoria = `OS Retirada #${ordem.codigo}`;
+
+        // LÓGICA DE SOMA OU SUBTRAÇÃO DEPENDENDO DO TIPO
+        if (ordem.tipo === 'ENTRADA' || ordem.tipo === 'DEVOLUCAO') {
+          tipoAcaoAuditoria = ordem.tipo === 'ENTRADA' ? 'Entrada de mercadoria' : 'Devolução VIAPRO';
+          observacaoAuditoria = `OS ${ordem.tipo === 'ENTRADA' ? 'Entrada' : 'Devolução'} #${ordem.codigo}`;
+
+          if (estoqueExistente) {
+            await tx.estoque.update({
+              where: { id: estoqueExistente.id },
+              data: { quantidade: { increment: item.quantidade } }
+            });
+          } else {
+            await tx.estoque.create({
+              data: { produtoId: item.produtoId, quantidade: item.quantidade, status: 'Disponível' }
+            });
+          }
+        } 
+        else { 
+          // É uma SAÍDA, precisamos subtrair e garantir que há saldo
+          if (!estoqueExistente || estoqueExistente.quantidade < item.quantidade) {
+            throw new Error(`Estoque insuficiente para finalizar o item ID: ${item.produtoId}. Saldo disponível no armazém não cobre a quantidade requerida.`);
+          }
           await tx.estoque.update({
             where: { id: estoqueExistente.id },
-            data: { quantidade: { increment: item.quantidade } }
-          });
-        } else {
-          await tx.estoque.create({
-            data: { produtoId: item.produtoId, quantidade: item.quantidade, status: 'Disponível' }
+            data: { quantidade: { decrement: item.quantidade } }
           });
         }
 
+        // Registo da Auditoria Inteligente
         await tx.movimentacao.create({
           data: {
             produtoId: item.produtoId,
             usuarioId: usuarioId,
             quantidade: item.quantidade,
-            tipoAcao: 'Entrada de mercadoria',
-            codigo: ordem.codigo,
-            observacao: `Transferência via OS de Separação ${ordem.codigo}`
+            tipoAcao: tipoAcaoAuditoria,
+            codigo: ordem.codigo, // Guarda o número exato da OS
+            observacao: observacaoAuditoria
           }
         });
       }
