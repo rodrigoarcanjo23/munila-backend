@@ -4,6 +4,9 @@ import { PrismaClient } from '@prisma/client';
 import fornecedorRoutes from './routes/fornecedor.routes';
 import nodemailer from 'nodemailer';
 
+// ✨ IMPORT DO NOVO MÓDULO DE TRANSFORMAÇÃO ✨
+import transformacaoRoutes from './routesTransformacao';
+
 const prisma = new PrismaClient();
 const app = express();
 
@@ -76,6 +79,9 @@ async function gerarCodigoOS(): Promise<string> {
 }
 
 app.use('/fornecedores', fornecedorRoutes);
+
+// ✨ ATIVAÇÃO DA NOVA ROTA DO LABORATÓRIO ✨
+app.use('/transformacao', transformacaoRoutes);
 
 app.post('/login', async (req, res) => {
   try {
