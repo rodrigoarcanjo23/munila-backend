@@ -47,6 +47,9 @@ model Produto {
   precoCusto          Float?         @default(0)
   precoVenda          Float?         @default(0)
   
+  // ✨ NOVO CAMPO ADICIONADO PARA O CLOUDINARY ✨
+  imagemUrl           String?
+  
   dataCadastro        DateTime       @default(now()) 
   
   lote                String?
@@ -122,18 +125,18 @@ model Fornecedor {
 }
 
 model PedidoCompra {
-  id           String      @id @default(uuid())
+  id           String    @id @default(uuid())
   fornecedorId String
-  fornecedor   Fornecedor  @relation(fields: [fornecedorId], references: [id])
+  fornecedor   Fornecedor @relation(fields: [fornecedorId], references: [id])
   produtoId    String
-  produto      Produto     @relation(fields: [produtoId], references: [id])
-  codigo       String?     // O código sequencial PC000126
+  produto      Produto    @relation(fields: [produtoId], references: [id])
+  codigo       String?   // O código sequencial PC000126
   quantidade   Int
   custoTotal   Float
   dataPrevisao DateTime?
-  status       String      @default("Pendente") // 'Pendente' ou 'Recebido'
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  status       String    @default("Pendente") // 'Pendente' ou 'Recebido'
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 // CAIXA PRETA DE AUDITORIA
@@ -166,7 +169,7 @@ model OrdemTransferencia {
   separadorId   String?
   separador     Usuario?  @relation("OrdensSeparadas", fields: [separadorId], references: [id])
 
-  itens         ItemOrdemTransferencia[]
+  itens           ItemOrdemTransferencia[]
   
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -182,4 +185,36 @@ model ItemOrdemTransferencia {
   
   produtoId        String
   produto          Produto            @relation(fields: [produtoId], references: [id])
+}
+
+// ==========================================
+// MÓDULO: LABORATÓRIO DE TRANSFORMAÇÃO
+// ==========================================
+
+model TransformacaoItem {
+  id         String   @id @default(uuid())
+  tipo       String   // 'INSUMO' | 'ACABADO'
+  sku        String   @unique
+  nome       String
+  quantidade Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model TransformacaoLote {
+  id           String   @id @default(uuid())
+  codigoLote   String   // Novo campo solicitado para rastreabilidade
+  produtoNome  String
+  produtoSku   String
+  quantidade   Float
+  receitaUsada Json     // Guardamos a receita em JSON para manter o histórico exato do momento da fabricação
+  createdAt    DateTime @default(now())
+}
+
+model TransformacaoAuditoria {
+  id        String   @id @default(uuid())
+  acao      String   // 'Criação' | 'Exclusão'
+  detalhes  String
+  usuario   String
+  dataHora  DateTime @default(now())
 }
