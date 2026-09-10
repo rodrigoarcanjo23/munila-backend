@@ -486,7 +486,7 @@ app.get('/wms/ordens', async (req, res) => {
 
 app.post('/wms/ordens', async (req, res) => {
   try {
-    const { solicitanteId, itens, tipo } = req.body; // ✨ AGORA RECEBE O TIPO
+    const { solicitanteId, itens, tipo, prioridade } = req.body; // ✨ AGORA RECEBE A PRIORIDADE
     
     if (!itens || itens.length === 0) {
       return res.status(400).json({ error: 'A ordem deve conter pelo menos um item.' });
@@ -499,7 +499,8 @@ app.post('/wms/ordens', async (req, res) => {
         codigo: codigoOS,
         solicitanteId,
         status: 'Pendente',
-        tipo: tipo || 'SAIDA', // ✨ GRAVA NO BANCO
+        tipo: tipo || 'SAIDA',
+        prioridade: prioridade || 'Normal', // ✨ GRAVA NO BANCO
         itens: {
           create: itens.map((item: any) => ({
             produtoId: item.produtoId,
@@ -549,6 +550,22 @@ app.put('/wms/ordens/:id/status', async (req, res) => {
     return res.json(ordem);
   } catch (error) {
     return res.status(500).json({ error: 'Erro ao atualizar o status da OS.' });
+  }
+});
+
+// ✨ NOVA ROTA: PAUSAR / DEVOLVER PARA PENDENTE ✨
+app.put('/wms/ordens/:id/pausar', async (req, res) => {
+  try {
+    const ordem = await prisma.ordemTransferencia.update({
+      where: { id: req.params.id },
+      data: { 
+        status: 'Pendente', // Volta para a fila
+        separadorId: null   // Remove o nome do operador
+      }
+    });
+    return res.json(ordem);
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao pausar a OS.' });
   }
 });
 

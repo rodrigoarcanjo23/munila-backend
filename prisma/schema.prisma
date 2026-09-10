@@ -157,9 +157,10 @@ model OrdemTransferencia {
   id            String    @id @default(uuid())
   codigo        String    @unique // Ex: OS-00124
   status        String    @default("Pendente") // Pendente, Em Separação, Concluída
-  
-  // ✨ A NOVA LINHA MÁGICA PARA DEFINIR O TIPO DE MOVIMENTAÇÃO ✨
   tipo          String    @default("SAIDA") // Pode ser: ENTRADA, SAIDA ou DEVOLUCAO
+  
+  // ✨ NOVA COLUNA DE PRIORIDADE ✨
+  prioridade    String    @default("Normal") // Normal, Alta, Urgente
   
   // Quem pediu (Escritório/Fábrica)
   solicitanteId String
@@ -176,15 +177,15 @@ model OrdemTransferencia {
 }
 
 model ItemOrdemTransferencia {
-  id               String             @id @default(uuid())
-  quantidade       Int
-  marcado          Boolean            @default(false) // O "quadradinho" da conferência
+  id                 String             @id @default(uuid())
+  quantidade         Int
+  marcado            Boolean            @default(false) // O "quadradinho" da conferência
   
-  ordemId          String
-  ordem            OrdemTransferencia @relation(fields: [ordemId], references: [id], onDelete: Cascade)
+  ordemId            String
+  ordem              OrdemTransferencia @relation(fields: [ordemId], references: [id], onDelete: Cascade)
   
-  produtoId        String
-  produto          Produto            @relation(fields: [produtoId], references: [id])
+  produtoId          String
+  produto            Produto            @relation(fields: [produtoId], references: [id])
 }
 
 // ==========================================
