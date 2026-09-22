@@ -18,9 +18,9 @@ router.get('/estoque', async (req, res) => {
 
 router.post('/estoque', async (req, res) => {
   try {
-    const { tipo, sku, nome, quantidade } = req.body;
+    const { tipo, sku, nome, quantidade, lote } = req.body;
     const novoItem = await prisma.transformacaoItem.create({
-      data: { tipo, sku, nome, quantidade }
+      data: { tipo, sku, nome, quantidade: Number(quantidade), lote }
     });
     res.status(201).json(novoItem);
   } catch (error) {
@@ -31,10 +31,10 @@ router.post('/estoque', async (req, res) => {
 router.put('/estoque/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { nome, sku, quantidade } = req.body;
+    const { nome, sku, quantidade, lote } = req.body;
     const atualizado = await prisma.transformacaoItem.update({
       where: { id },
-      data: { nome, sku, quantidade }
+      data: { nome, sku, quantidade: Number(quantidade), lote }
     });
     res.json(atualizado);
   } catch (error) {
@@ -66,18 +66,11 @@ router.get('/lotes', async (req, res) => {
 
 router.post('/lotes', async (req, res) => {
   try {
-    const { produtoNome, produtoSku, quantidade, receitaUsada, usuario } = req.body;
-    // Cria um código de lote automático
-    const codigoLote = `LT-${Date.now().toString().slice(-6)}`;
+    const { produtoNome, produtoSku, quantidade, codigoLote, receitaUsada, usuario } = req.body;
+    const qtdNum = Number(quantidade);
 
-    // O $transaction garante que ou tudo dá certo, ou ele desfaz tudo se houver erro
     await prisma.$transaction(async (tx) => {
-      // 1. Cria o Lote
-      await tx.transformacaoLote.create({
-        data: { codigoLote, produtoNome, produtoSku, quantidade, receitaUsada }
-      });
-
-      // 2. Desconta os Insumos
+      // 1. Desconta os Insumos
       for (const ing of receitaUsada) {
         await tx.transformacaoItem.update({
           where: { id: ing.idInsumo },
@@ -85,19 +78,21 @@ router.post('/lotes', async (req, res) => {
         });
       }
 
-      // 3. Adiciona o Produto Acabado (Atualiza se existir, Cria se não existir)
+      // 2. Adiciona o Produto Acabado
       await tx.transformacaoItem.upsert({
         where: { sku: produtoSku },
-        update: { quantidade: { increment: quantidade } },
-        create: { tipo: 'ACABADO', sku: produtoSku, nome: produtoNome, quantidade }
+        update: { quantidade: { increment: qtdNum }, lote: codigoLote },
+        create: { tipo: 'ACABADO', sku: produtoSku, nome: produtoNome, quantidade: qtdNum, lote: codigoLote }
       });
 
-      // 4. Registra Auditoria
+      // 3. Registra Auditoria com Lote Info
       await tx.transformacaoAuditoria.create({
         data: {
           acao: 'Criação',
-          detalhes: `Fabricou ${quantidade} un. de [${produtoSku}] ${produtoNome} (Lote: ${codigoLote}).`,
-          usuario: usuario || 'Sistema'
+          detalhes: `Fabricou ${qtdNum} un. de [${produtoSku}] ${produtoNome}.`,
+          usuario: usuario || 'Sistema',
+          loteInfo: codigoLote,
+          quantidadeInfo: qtdNum
         }
       });
     });
@@ -106,49 +101,6 @@ router.post('/lotes', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erro ao processar transformação' });
-  }
-});
-
-router.delete('/lotes/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { usuario } = req.body;
-
-    await prisma.$transaction(async (tx) => {
-      const lote = await tx.transformacaoLote.findUnique({ where: { id } });
-      if (!lote) throw new Error("Lote não encontrado");
-
-      const receita = lote.receitaUsada as any[];
-
-      // Devolve os insumos
-      for (const ing of receita) {
-        await tx.transformacaoItem.update({
-          where: { id: ing.idInsumo },
-          data: { quantidade: { increment: ing.totalGasto } }
-        });
-      }
-
-      // Desconta o Produto Acabado
-      await tx.transformacaoItem.update({
-        where: { sku: lote.produtoSku },
-        data: { quantidade: { decrement: lote.quantidade } }
-      });
-
-      // Apaga o Lote e Registra Auditoria
-      await tx.transformacaoLote.delete({ where: { id } });
-      await tx.transformacaoAuditoria.create({
-        data: {
-          acao: 'Exclusão',
-          detalhes: `Desfez o Lote ${lote.codigoLote}, gerando estorno de ${lote.quantidade} un. de [${lote.produtoSku}] ${lote.produtoNome}.`,
-          usuario: usuario || 'Sistema'
-        }
-      });
-    });
-
-    res.json({ message: 'Lote desfeito e estoque restaurado!' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Erro ao desfazer lote' });
   }
 });
 

@@ -29,10 +29,13 @@ model Usuario {
   cargo         String
   email         String         @unique
   senha         String
+  
+  // ✨ CAMPO PARA NOTIFICAÇÕES PUSH ✨
+  pushToken     String?
+
   estoques      Estoque[]
   movimentacoes Movimentacao[]
 
-  // ✨ RELAÇÕES PARA O MÓDULO WMS (SEPARAÇÃO) ✨
   ordensSolicitadas OrdemTransferencia[] @relation("OrdensSolicitadas")
   ordensSeparadas   OrdemTransferencia[] @relation("OrdensSeparadas")
 }
@@ -46,36 +49,27 @@ model Produto {
   tipo                String         @default("ACABADO") 
   precoCusto          Float?         @default(0)
   precoVenda          Float?         @default(0)
-  
-  // ✨ NOVO CAMPO ADICIONADO PARA O CLOUDINARY ✨
   imagemUrl           String?
-  
   dataCadastro        DateTime       @default(now()) 
-  
   lote                String?
   enderecoLocalizacao String?        
   fornecedorId        String?
   fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
-  
   categoriaId         String
   categoria           Categoria      @relation(fields: [categoriaId], references: [id])
   estoques            Estoque[]
   movimentacoes       Movimentacao[]
-  
   pedidosCompra       PedidoCompra[]
-
   receitaParaOutros   Composicao[]   @relation("ProdutoFilho")
   ingredientes        Composicao[]   @relation("ProdutoPai")
-
-  // ✨ RELAÇÃO PARA O MÓDULO WMS (SEPARAÇÃO) ✨
   itensTransferencia  ItemOrdemTransferencia[]
 }
 
 model Composicao {
   id             String  @id @default(uuid())
-  produtoPaiId   String  // O Produto Final (Nacional/Montado)
-  produtoFilhoId String  // A Matéria-Prima (Importado)
-  quantidade     Int     // Quantidade necessária para montar 1 unidade
+  produtoPaiId   String  
+  produtoFilhoId String  
+  quantidade     Int     
 
   produtoPai     Produto @relation("ProdutoPai", fields: [produtoPaiId], references: [id], onDelete: Cascade)
   produtoFilho   Produto @relation("ProdutoFilho", fields: [produtoFilhoId], references: [id])
@@ -88,7 +82,7 @@ model Estoque {
   produtoId     String
   produto       Produto      @relation(fields: [produtoId], references: [id])
   quantidade    Int
-  status        String       // Ex: 'Disponível', 'Em Demonstração'
+  status        String       
   localizacaoId String?
   localizacao   Localizacao? @relation(fields: [localizacaoId], references: [id])
   responsavelId String?
@@ -100,8 +94,8 @@ model Movimentacao {
   produtoId           String
   usuarioId           String
   quantidade          Int
-  tipoAcao            String    // 'Entrada de mercadoria', 'Devolução VIAPRO', etc.
-  codigo              String?   // Campo para O "RE000126" e "RS000126"
+  tipoAcao            String    
+  codigo              String?   
   observacao          String?
   dataPrevistaRetorno DateTime?
   dataHora            DateTime  @default(now())
@@ -130,16 +124,15 @@ model PedidoCompra {
   fornecedor   Fornecedor @relation(fields: [fornecedorId], references: [id])
   produtoId    String
   produto      Produto    @relation(fields: [produtoId], references: [id])
-  codigo       String?   // O código sequencial PC000126
+  codigo       String?   
   quantidade   Int
   custoTotal   Float
   dataPrevisao DateTime?
-  status       String    @default("Pendente") // 'Pendente' ou 'Recebido'
+  status       String    @default("Pendente") 
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }
 
-// CAIXA PRETA DE AUDITORIA
 model LogAuditoria {
   id          String   @id @default(uuid())
   acao        String
@@ -149,29 +142,17 @@ model LogAuditoria {
   dataHora    DateTime @default(now())
 }
 
-// ==========================================
-// MÓDULO WMS: SEPARAÇÃO E TRANSFERÊNCIA
-// ==========================================
-
 model OrdemTransferencia {
   id            String    @id @default(uuid())
-  codigo        String    @unique // Ex: OS-00124
-  status        String    @default("Pendente") // Pendente, Em Separação, Concluída
-  tipo          String    @default("SAIDA") // Pode ser: ENTRADA, SAIDA ou DEVOLUCAO
-  
-  // ✨ NOVA COLUNA DE PRIORIDADE ✨
-  prioridade    String    @default("Normal") // Normal, Alta, Urgente
-  
-  // Quem pediu (Escritório/Fábrica)
+  codigo        String    @unique 
+  status        String    @default("Pendente") 
+  tipo          String    @default("SAIDA") 
+  prioridade    String    @default("Normal") 
   solicitanteId String
   solicitante   Usuario   @relation("OrdensSolicitadas", fields: [solicitanteId], references: [id])
-  
-  // Quem está separando (Armazém)
   separadorId   String?
   separador     Usuario?  @relation("OrdensSeparadas", fields: [separadorId], references: [id])
-
-  itens           ItemOrdemTransferencia[]
-  
+  itens         ItemOrdemTransferencia[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 }
@@ -179,43 +160,40 @@ model OrdemTransferencia {
 model ItemOrdemTransferencia {
   id                 String             @id @default(uuid())
   quantidade         Int
-  marcado            Boolean            @default(false) // O "quadradinho" da conferência
-  
+  marcado            Boolean            @default(false) 
   ordemId            String
   ordem              OrdemTransferencia @relation(fields: [ordemId], references: [id], onDelete: Cascade)
-  
   produtoId          String
   produto            Produto            @relation(fields: [produtoId], references: [id])
 }
 
-// ==========================================
-// MÓDULO: LABORATÓRIO DE TRANSFORMAÇÃO
-// ==========================================
-
 model TransformacaoItem {
   id         String   @id @default(uuid())
-  tipo       String   // 'INSUMO' | 'ACABADO'
+  tipo       String   
   sku        String   @unique
   nome       String
   quantidade Float    @default(0)
+  lote       String?  // ✨ CAMPO LOTE ESTOQUE CONSOLIDADO
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
 
 model TransformacaoLote {
   id           String   @id @default(uuid())
-  codigoLote   String   // Novo campo solicitado para rastreabilidade
+  codigoLote   String   
   produtoNome  String
   produtoSku   String
   quantidade   Float
-  receitaUsada Json     // Guardamos a receita em JSON para manter o histórico exato do momento da fabricação
+  receitaUsada Json     
   createdAt    DateTime @default(now())
 }
 
 model TransformacaoAuditoria {
-  id        String   @id @default(uuid())
-  acao      String   // 'Criação' | 'Exclusão'
-  detalhes  String
-  usuario   String
-  dataHora  DateTime @default(now())
+  id             String   @id @default(uuid())
+  acao           String   
+  detalhes       String
+  usuario        String
+  loteInfo       String?  // ✨ LOTE PARA BUSCA NO RELATÓRIO
+  quantidadeInfo Float?   // ✨ QTD PARA BUSCA NO RELATÓRIO
+  dataHora       DateTime @default(now())
 }
