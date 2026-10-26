@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================
+// IMPORTANTE: todas as alterações deste arquivo são ADITIVAS
+// (campos opcionais / com default e tabelas novas). Rode
+// `npx prisma db push` para aplicar sem perder dados.
+// ============================================================
+
 model Categoria {
   id        String    @id @default(uuid())
   nome      String
@@ -29,8 +35,6 @@ model Usuario {
   cargo         String
   email         String         @unique
   senha         String
-  
-  // ✨ CAMPO PARA NOTIFICAÇÕES PUSH ✨
   pushToken     String?
 
   estoques      Estoque[]
@@ -38,6 +42,8 @@ model Usuario {
 
   ordensSolicitadas OrdemTransferencia[] @relation("OrdensSolicitadas")
   ordensSeparadas   OrdemTransferencia[] @relation("OrdensSeparadas")
+  inventarios       Inventario[]         @relation("InventarioResponsavel")
+  contagens         InventarioItem[]     @relation("InventarioContador")
 }
 
 model Produto {
@@ -46,13 +52,21 @@ model Produto {
   nome                String
   descricao           String?
   codigoBarras        String?        @unique
-  tipo                String         @default("ACABADO") 
+  tipo                String         @default("ACABADO")
   precoCusto          Float?         @default(0)
   precoVenda          Float?         @default(0)
   imagemUrl           String?
-  dataCadastro        DateTime       @default(now()) 
+  dataCadastro        DateTime       @default(now())
   lote                String?
-  enderecoLocalizacao String?        
+  enderecoLocalizacao String?
+
+  // ✨ NOVOS CAMPOS (parâmetros de reposição e validade)
+  unidade             String?        @default("UN")
+  estoqueMinimo       Int?
+  estoqueMaximo       Int?
+  leadTimeDias        Int?
+  validade            DateTime?
+
   fornecedorId        String?
   fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
   categoriaId         String
@@ -63,18 +77,19 @@ model Produto {
   receitaParaOutros   Composicao[]   @relation("ProdutoFilho")
   ingredientes        Composicao[]   @relation("ProdutoPai")
   itensTransferencia  ItemOrdemTransferencia[]
+  itensInventario     InventarioItem[]
 }
 
 model Composicao {
   id             String  @id @default(uuid())
-  produtoPaiId   String  
-  produtoFilhoId String  
-  quantidade     Int     
+  produtoPaiId   String
+  produtoFilhoId String
+  quantidade     Int
 
   produtoPai     Produto @relation("ProdutoPai", fields: [produtoPaiId], references: [id], onDelete: Cascade)
   produtoFilho   Produto @relation("ProdutoFilho", fields: [produtoFilhoId], references: [id])
 
-  @@unique([produtoPaiId, produtoFilhoId]) 
+  @@unique([produtoPaiId, produtoFilhoId])
 }
 
 model Estoque {
@@ -82,7 +97,7 @@ model Estoque {
   produtoId     String
   produto       Produto      @relation(fields: [produtoId], references: [id])
   quantidade    Int
-  status        String       
+  status        String
   localizacaoId String?
   localizacao   Localizacao? @relation(fields: [localizacaoId], references: [id])
   responsavelId String?
@@ -94,14 +109,17 @@ model Movimentacao {
   produtoId           String
   usuarioId           String
   quantidade          Int
-  tipoAcao            String    
-  codigo              String?   
+  tipoAcao            String
+  codigo              String?
   observacao          String?
   dataPrevistaRetorno DateTime?
   dataHora            DateTime  @default(now())
 
   produto Produto @relation(fields: [produtoId], references: [id])
   usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([produtoId, dataHora])
+  @@index([dataHora])
 }
 
 model Fornecedor {
@@ -119,18 +137,25 @@ model Fornecedor {
 }
 
 model PedidoCompra {
-  id           String    @id @default(uuid())
+  id           String     @id @default(uuid())
   fornecedorId String
   fornecedor   Fornecedor @relation(fields: [fornecedorId], references: [id])
   produtoId    String
   produto      Produto    @relation(fields: [produtoId], references: [id])
-  codigo       String?   
+  codigo       String?
   quantidade   Int
   custoTotal   Float
   dataPrevisao DateTime?
-  status       String    @default("Pendente") 
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  status       String     @default("Pendente")
+
+  // ✨ NOVOS CAMPOS (recebimento com conferência cega)
+  quantidadeRecebida Int?
+  divergencia        String?
+  dataRecebimento    DateTime?
+  observacao         String?
+
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 }
 
 model LogAuditoria {
@@ -144,15 +169,21 @@ model LogAuditoria {
 
 model OrdemTransferencia {
   id            String    @id @default(uuid())
-  codigo        String    @unique 
-  status        String    @default("Pendente") 
-  tipo          String    @default("SAIDA") 
-  prioridade    String    @default("Normal") 
+  codigo        String    @unique
+  status        String    @default("Pendente")
+  tipo          String    @default("SAIDA")
+  prioridade    String    @default("Normal")
   solicitanteId String
   solicitante   Usuario   @relation("OrdensSolicitadas", fields: [solicitanteId], references: [id])
   separadorId   String?
   separador     Usuario?  @relation("OrdensSeparadas", fields: [separadorId], references: [id])
   itens         ItemOrdemTransferencia[]
+
+  // ✨ NOVOS CAMPOS (produtividade da separação)
+  observacao    String?
+  iniciadaEm    DateTime?
+  concluidaEm   DateTime?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 }
@@ -160,7 +191,7 @@ model OrdemTransferencia {
 model ItemOrdemTransferencia {
   id                 String             @id @default(uuid())
   quantidade         Int
-  marcado            Boolean            @default(false) 
+  marcado            Boolean            @default(false)
   ordemId            String
   ordem              OrdemTransferencia @relation(fields: [ordemId], references: [id], onDelete: Cascade)
   produtoId          String
@@ -169,31 +200,64 @@ model ItemOrdemTransferencia {
 
 model TransformacaoItem {
   id         String   @id @default(uuid())
-  tipo       String   
+  tipo       String
   sku        String   @unique
   nome       String
   quantidade Float    @default(0)
-  lote       String?  // ✨ CAMPO LOTE ESTOQUE CONSOLIDADO
+  lote       String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
 
 model TransformacaoLote {
   id           String   @id @default(uuid())
-  codigoLote   String   
+  codigoLote   String
   produtoNome  String
   produtoSku   String
   quantidade   Float
-  receitaUsada Json     
+  receitaUsada Json
   createdAt    DateTime @default(now())
 }
 
 model TransformacaoAuditoria {
   id             String   @id @default(uuid())
-  acao           String   
+  acao           String
   detalhes       String
   usuario        String
-  loteInfo       String?  // ✨ LOTE PARA BUSCA NO RELATÓRIO
-  quantidadeInfo Float?   // ✨ QTD PARA BUSCA NO RELATÓRIO
+  loteInfo       String?
+  quantidadeInfo Float?
   dataHora       DateTime @default(now())
+}
+
+// ============================================================
+// ✨ NOVO MÓDULO: INVENTÁRIO (geral ou cíclico, com contagem cega)
+// ============================================================
+model Inventario {
+  id            String           @id @default(uuid())
+  codigo        String           @unique
+  descricao     String?
+  tipo          String           @default("Cíclico") // Geral | Cíclico
+  status        String           @default("Aberto")  // Aberto | Em contagem | Concluído | Cancelado
+  cego          Boolean          @default(true)
+  responsavelId String?
+  responsavel   Usuario?         @relation("InventarioResponsavel", fields: [responsavelId], references: [id])
+  itens         InventarioItem[]
+  createdAt     DateTime         @default(now())
+  concluidoEm   DateTime?
+}
+
+model InventarioItem {
+  id                String     @id @default(uuid())
+  inventarioId      String
+  inventario        Inventario @relation(fields: [inventarioId], references: [id], onDelete: Cascade)
+  produtoId         String
+  produto           Produto    @relation(fields: [produtoId], references: [id])
+  saldoSistema      Int
+  quantidadeContada Int?
+  contadoPorId      String?
+  contadoPor        Usuario?   @relation("InventarioContador", fields: [contadoPorId], references: [id])
+  contadoEm         DateTime?
+  ajustado          Boolean    @default(false)
+
+  @@unique([inventarioId, produtoId])
 }

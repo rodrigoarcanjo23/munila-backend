@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node-dev --transpile-only --ignore-watch node_modules src/server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "prisma generate && tsc",
+    "start": "node dist/server.js",
+    "db:push": "prisma db push",
+    "seed": "ts-node-dev --transpile-only src/seed.ts"
   },
   "keywords": [],
   "author": "",
@@ -13,14 +16,18 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "@types/nodemailer": "^7.0.11",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
     "nodemailer": "^8.0.1"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^25.3.0",
     "prisma": "^5.22.0",
     "ts-node-dev": "^2.0.0",

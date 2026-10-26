@@ -1,74 +1,37 @@
 import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
+import { badRequest } from '../lib/http';
 
-const prisma = new PrismaClient();
 const router = Router();
 
-// 1. LISTAR TODOS OS FORNECEDORES (GET /fornecedores)
-router.get('/', async (req, res) => {
-  try {
-    const fornecedores = await prisma.fornecedor.findMany({
-      orderBy: { nomeEmpresa: 'asc' } // Já devolve ordenado alfabeticamente
-    });
-    return res.json(fornecedores);
-  } catch (error) {
-    console.error("Erro ao buscar fornecedores:", error);
-    return res.status(500).json({ error: 'Erro ao buscar fornecedores.' });
-  }
+router.get('/', async (_req, res) => {
+  const fornecedores = await prisma.fornecedor.findMany({
+    orderBy: { nomeEmpresa: 'asc' },
+    include: { _count: { select: { produtos: true, pedidosCompra: true } } },
+  });
+  return res.json(fornecedores);
 });
 
-// 2. CRIAR NOVO FORNECEDOR (POST /fornecedores)
 router.post('/', async (req, res) => {
-  try {
-    const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body;
-
-    if (!nomeEmpresa) {
-      return res.status(400).json({ error: 'O Nome da Empresa é obrigatório.' });
-    }
-
-    const novoFornecedor = await prisma.fornecedor.create({
-      data: { nomeEmpresa, cnpj, contatoNome, telefone, email }
-    });
-
-    return res.status(201).json(novoFornecedor);
-  } catch (error) {
-    console.error("Erro ao cadastrar fornecedor:", error);
-    return res.status(500).json({ error: 'Erro ao cadastrar fornecedor.' });
-  }
+  const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body || {};
+  if (!nomeEmpresa) throw badRequest('O Nome da Empresa é obrigatório.');
+  const novo = await prisma.fornecedor.create({ data: { nomeEmpresa, cnpj, contatoNome, telefone, email } });
+  return res.status(201).json(novo);
 });
 
-// 3. ATUALIZAR FORNECEDOR (PUT /fornecedores/:id)
 router.put('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body;
-
-    const fornecedorAtualizado = await prisma.fornecedor.update({
-      where: { id },
-      data: { nomeEmpresa, cnpj, contatoNome, telefone, email }
-    });
-
-    return res.json(fornecedorAtualizado);
-  } catch (error) {
-    console.error("Erro ao atualizar fornecedor:", error);
-    return res.status(500).json({ error: 'Erro ao atualizar os dados do fornecedor.' });
-  }
+  const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body || {};
+  const atualizado = await prisma.fornecedor.update({ where: { id: req.params.id }, data: { nomeEmpresa, cnpj, contatoNome, telefone, email } });
+  return res.json(atualizado);
 });
 
-// 4. EXCLUIR FORNECEDOR (DELETE /fornecedores/:id)
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    await prisma.fornecedor.delete({
-      where: { id }
-    });
-
-    return res.status(204).send(); // 204 = No Content (Sucesso, mas não precisa devolver nada)
-  } catch (error) {
-    console.error("Erro ao excluir fornecedor:", error);
-    return res.status(400).json({ error: 'Não foi possível excluir o fornecedor. Pode estar atrelado a algum registo.' });
+    await prisma.fornecedor.delete({ where: { id: req.params.id } });
+  } catch {
+    throw badRequest('Não foi possível excluir o fornecedor. Ele possui produtos ou pedidos vinculados.');
   }
+  return res.status(204).send();
 });
 
 export default router;
