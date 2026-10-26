@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
-import { badRequest } from '../lib/http';
+import { badRequest, intOuNull } from '../lib/http';
 
 const router = Router();
 
@@ -13,15 +13,18 @@ router.get('/', async (_req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body || {};
+  const { nomeEmpresa, cnpj, contatoNome, telefone, email, prazoPagamentoDias } = req.body || {};
   if (!nomeEmpresa) throw badRequest('O Nome da Empresa é obrigatório.');
-  const novo = await prisma.fornecedor.create({ data: { nomeEmpresa, cnpj, contatoNome, telefone, email } });
+  const novo = await prisma.fornecedor.create({ data: { nomeEmpresa, cnpj, contatoNome, telefone, email, prazoPagamentoDias: intOuNull(prazoPagamentoDias) } });
   return res.status(201).json(novo);
 });
 
 router.put('/:id', async (req, res) => {
-  const { nomeEmpresa, cnpj, contatoNome, telefone, email } = req.body || {};
-  const atualizado = await prisma.fornecedor.update({ where: { id: req.params.id }, data: { nomeEmpresa, cnpj, contatoNome, telefone, email } });
+  const { nomeEmpresa, cnpj, contatoNome, telefone, email, prazoPagamentoDias } = req.body || {};
+  const atualizado = await prisma.fornecedor.update({
+    where: { id: req.params.id },
+    data: { nomeEmpresa, cnpj, contatoNome, telefone, email, prazoPagamentoDias: prazoPagamentoDias === undefined ? undefined : intOuNull(prazoPagamentoDias) },
+  });
   return res.json(atualizado);
 });
 

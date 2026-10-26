@@ -12,6 +12,9 @@ import inventarioRoutes from './routes/inventario.routes';
 import gerencialRoutes from './routes/gerencial.routes';
 import fornecedorRoutes from './routes/fornecedor.routes';
 import transformacaoRoutes from './routes/transformacao.routes';
+import armazensRoutes from './routes/armazens.routes';
+import financeiroRoutes from './routes/financeiro.routes';
+import empresaRoutes from './routes/empresa.routes';
 
 export function criarApp() {
   const app = express();
@@ -32,6 +35,9 @@ export function criarApp() {
   app.use(wmsRoutes);           // /wms/ordens
   app.use(inventarioRoutes);    // /inventarios
   app.use(gerencialRoutes);     // /dashboard/resumo, /dashboard/painel, /gerencial/*
+  app.use(armazensRoutes);       // ✨ /armazens
+  app.use(financeiroRoutes);     // ✨ /financeiro/*
+  app.use(empresaRoutes);        // ✨ /empresa, /fiscal/pendencias
   app.use('/fornecedores', fornecedorRoutes);
   app.use('/transformacao', transformacaoRoutes);
 

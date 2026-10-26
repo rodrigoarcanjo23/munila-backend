@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
-import { STATUS, gerarCodigoOS, linhaEstoque } from '../lib/estoque';
+import { armazemPadrao, entradaEstoque, gerarCodigoOS, registrarMovimentos, saidaFEFO, sugerirFEFO } from '../lib/estoque';
 import { enviarPush } from '../lib/notificacoes';
 
 const router = Router();
@@ -11,6 +11,7 @@ const INCLUDE_ORDEM = {
   solicitante: { select: { nome: true } },
   separador: { select: { nome: true } },
   itens: { include: { produto: true } },
+  armazem: true,
 } as const;
 
 function itensValidos(itens: any): { produtoId: string; quantidade: number }[] {
@@ -27,7 +28,7 @@ router.get('/wms/ordens', async (_req, res) => {
 });
 
 router.post('/wms/ordens', async (req, res) => {
-  const { tipo, prioridade, observacao } = req.body || {};
+  const { tipo, prioridade, observacao, armazemId } = req.body || {};
   const solicitanteId = req.usuario?.id || req.body?.solicitanteId;
   if (!solicitanteId) throw badRequest('Solicitante não identificado.');
   const itens = itensValidos(req.body?.itens);
@@ -36,7 +37,7 @@ router.post('/wms/ordens', async (req, res) => {
     tx.ordemTransferencia.create({
       data: {
         codigo: await gerarCodigoOS(tx), solicitanteId, status: 'Pendente', tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal',
-        observacao: observacao || null, itens: { create: itens },
+        observacao: observacao || null, armazemId: armazemId || (await armazemPadrao(tx)), itens: { create: itens },
       },
       include: { itens: true },
     }),
@@ -47,7 +48,7 @@ router.post('/wms/ordens', async (req, res) => {
 });
 
 router.put('/wms/ordens/:id', async (req, res) => {
-  const { tipo, prioridade, observacao } = req.body || {};
+  const { tipo, prioridade, observacao, armazemId } = req.body || {};
   const itens = itensValidos(req.body?.itens);
   const atual = await prisma.ordemTransferencia.findUnique({ where: { id: req.params.id } });
   if (!atual || atual.status !== 'Pendente') throw badRequest('Apenas ordens Pendentes podem ser editadas.');
@@ -56,7 +57,7 @@ router.put('/wms/ordens/:id', async (req, res) => {
     await tx.itemOrdemTransferencia.deleteMany({ where: { ordemId: atual.id } });
     return tx.ordemTransferencia.update({
       where: { id: atual.id },
-      data: { tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal', observacao: observacao ?? atual.observacao, itens: { create: itens } },
+      data: { tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal', observacao: observacao ?? atual.observacao, armazemId: armazemId || atual.armazemId, itens: { create: itens } },
       include: { itens: true },
     });
   });
@@ -89,6 +90,18 @@ router.put('/wms/ordens/:id/pausar', async (req, res) => {
   return res.json(ordem);
 });
 
+/** ✨ FASE 2: sugestão de picking por lote (FEFO) para cada item da ordem. */
+router.get('/wms/ordens/:id/picking', async (req, res) => {
+  const ordem = await prisma.ordemTransferencia.findUnique({ where: { id: String(req.params.id) }, include: { itens: { include: { produto: true } } } });
+  if (!ordem) throw notFound('Ordem não encontrada.');
+  const itens = [];
+  for (const i of ordem.itens) {
+    const s = ordem.tipo === 'SAIDA' ? await sugerirFEFO(prisma, i.produtoId, i.quantidade, ordem.armazemId) : { partes: [], falta: 0, disponivel: 0 };
+    itens.push({ itemId: i.id, produtoId: i.produtoId, ...s });
+  }
+  return res.json(itens);
+});
+
 /** ✨ NOVO: persiste o checklist de conferência item a item (permite retomar a conferência em outro aparelho). */
 router.put('/wms/ordens/:id/itens/:itemId', async (req, res) => {
   const item = await prisma.itemOrdemTransferencia.update({ where: { id: req.params.itemId }, data: { marcado: Boolean(req.body?.marcado) } });
@@ -106,21 +119,17 @@ router.post('/wms/ordens/:id/concluir', async (req, res) => {
     const entrada = ordem.tipo === 'ENTRADA' || ordem.tipo === 'DEVOLUCAO';
 
     for (const item of ordem.itens) {
-      const disponivel = await linhaEstoque(tx, item.produtoId, STATUS.DISPONIVEL);
-      let tipoAcao = 'Saída de mercadoria';
-      let observacao = `OS Retirada #${ordem.codigo}`;
-
+      const rotulo = `[${item.produto.sku}] ${item.produto.nome}`;
       if (entrada) {
-        tipoAcao = ordem.tipo === 'ENTRADA' ? 'Entrada de mercadoria' : 'Devolução VIAPRO';
-        observacao = `OS ${ordem.tipo === 'ENTRADA' ? 'Entrada' : 'Devolução'} #${ordem.codigo}`;
-        await tx.estoque.update({ where: { id: disponivel.id }, data: { quantidade: { increment: item.quantidade } } });
+        const tipoAcao = ordem.tipo === 'ENTRADA' ? 'Entrada de mercadoria' : 'Devolução VIAPRO';
+        const observacao = `OS ${ordem.tipo === 'ENTRADA' ? 'Entrada' : 'Devolução'} #${ordem.codigo}`;
+        const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId });
+        await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao, codigo: ordem.codigo, observacao }, [parte]);
       } else {
-        if (disponivel.quantidade < item.quantidade) {
-          throw new Error(`Estoque insuficiente de [${item.produto.sku}] ${item.produto.nome}: solicitado ${item.quantidade}, disponível ${disponivel.quantidade}.`);
-        }
-        await tx.estoque.update({ where: { id: disponivel.id }, data: { quantidade: { decrement: item.quantidade } } });
+        // ✨ FASE 2: saída FEFO — consome primeiro os lotes que vencem antes
+        const partes = await saidaFEFO(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId, rotulo });
+        await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao: 'Saída de mercadoria', codigo: ordem.codigo, observacao: `OS Retirada #${ordem.codigo}` }, partes);
       }
-      await tx.movimentacao.create({ data: { produtoId: item.produtoId, usuarioId, quantidade: item.quantidade, tipoAcao, codigo: ordem.codigo, observacao } });
     }
 
     await tx.itemOrdemTransferencia.updateMany({ where: { ordemId: ordem.id }, data: { marcado: true } });

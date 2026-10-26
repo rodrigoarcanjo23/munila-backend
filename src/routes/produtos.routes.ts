@@ -39,6 +39,11 @@ function dadosProduto(body: any) {
     leadTimeDias: body.leadTimeDias !== undefined ? intOuNull(body.leadTimeDias) : undefined,
     validade: body.validade !== undefined ? dataOuNull(body.validade) : undefined,
     imagemUrl: body.imagemUrl !== undefined ? body.imagemUrl || null : undefined,
+    // ✨ FASE 2: dados fiscais
+    ncm: body.ncm !== undefined ? (String(body.ncm).replace(/\D/g, '') || null) : undefined,
+    cest: body.cest !== undefined ? (String(body.cest).replace(/\D/g, '') || null) : undefined,
+    origemFiscal: body.origemFiscal !== undefined ? intOuNull(body.origemFiscal) : undefined,
+    cfopPadrao: body.cfopPadrao !== undefined ? (String(body.cfopPadrao).replace(/\D/g, '') || null) : undefined,
   };
 }
 
@@ -153,9 +158,10 @@ router.get('/produtos/:id/kardex', async (req, res) => {
   if (!produto) throw notFound('Produto não encontrado.');
 
   const [estoques, movs] = await Promise.all([
-    prisma.estoque.findMany({ where: { produtoId: produto.id } }),
+    prisma.estoque.findMany({ where: { produtoId: produto.id }, include: { armazem: true } }),
     prisma.movimentacao.findMany({ where: { produtoId: produto.id }, include: { usuario: { select: { nome: true } } }, orderBy: { dataHora: 'desc' } }),
   ]);
+  const armazens = new Map(estoques.filter(e => e.armazem).map(e => [e.armazemId!, e.armazem!.nome]));
   const saldoAtual = estoques.filter(e => e.status === STATUS.DISPONIVEL).reduce((a, e) => a + e.quantidade, 0);
 
   let saldo = saldoAtual;
@@ -164,6 +170,7 @@ router.get('/produtos/:id/kardex', async (req, res) => {
     const linha = {
       id: m.id, dataHora: m.dataHora, tipoAcao: m.tipoAcao, codigo: m.codigo, observacao: m.observacao,
       usuario: m.usuario?.nome, entrada: entrada ? m.quantidade : 0, saida: entrada ? 0 : m.quantidade, saldo,
+      lote: m.lote, validade: m.validade, armazem: m.armazemId ? armazens.get(m.armazemId) ?? null : null,
     };
     saldo -= entrada ? m.quantidade : -m.quantidade;
     return linha;
@@ -173,6 +180,11 @@ router.get('/produtos/:id/kardex', async (req, res) => {
     produto,
     saldoAtual,
     saldoInicial: saldo, // saldo de implantação (antes do primeiro lançamento registrado)
+    // ✨ FASE 2: saldo disponível por armazém e por lote (ordem FEFO)
+    lotes: estoques
+      .filter(e => e.status === STATUS.DISPONIVEL && e.quantidade > 0)
+      .map(e => ({ armazem: e.armazem?.nome ?? '-', armazemId: e.armazemId, lote: e.lote, validade: e.validade ?? produto.validade, quantidade: e.quantidade }))
+      .sort((a, b) => (a.validade?.getTime() ?? Infinity) - (b.validade?.getTime() ?? Infinity)),
     saldosPorStatus: estoques.reduce<Record<string, number>>((acc, e) => ({ ...acc, [e.status]: (acc[e.status] || 0) + e.quantidade }), {}),
     linhas: linhas.reverse(),
   });

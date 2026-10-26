@@ -30,23 +30,23 @@ router.delete('/categorias/:id', async (req, res) => {
 // ---------------- Localizações (endereços do armazém) ----------------
 // Correção: o front já chamava POST/PUT/DELETE, mas a API só tinha o GET.
 router.get('/localizacoes', async (_req, res) => {
-  return res.json(await prisma.localizacao.findMany({ orderBy: { codigo: 'asc' } }));
+  return res.json(await prisma.localizacao.findMany({ orderBy: { codigo: 'asc' }, include: { armazem: true } }));
 });
 
 router.post('/localizacoes', async (req, res) => {
-  const { codigo, zona, corredor, prateleira } = req.body || {};
+  const { codigo, zona, corredor, prateleira, armazemId } = req.body || {};
   if (!codigo || !zona) throw badRequest('Código e zona são obrigatórios.');
   const novo = await prisma.localizacao.create({
-    data: { codigo: String(codigo).trim().toUpperCase(), zona, corredor: corredor || '-', prateleira: prateleira || '-' },
+    data: { codigo: String(codigo).trim().toUpperCase(), zona, corredor: corredor || '-', prateleira: prateleira || '-', armazemId: armazemId || null },
   });
   return res.status(201).json(novo);
 });
 
 router.put('/localizacoes/:id', async (req, res) => {
-  const { codigo, zona, corredor, prateleira } = req.body || {};
+  const { codigo, zona, corredor, prateleira, armazemId } = req.body || {};
   const atualizado = await prisma.localizacao.update({
     where: { id: req.params.id },
-    data: { codigo: codigo ? String(codigo).trim().toUpperCase() : undefined, zona, corredor, prateleira },
+    data: { codigo: codigo ? String(codigo).trim().toUpperCase() : undefined, zona, corredor, prateleira, armazemId: armazemId === undefined ? undefined : armazemId || null },
   });
   return res.json(atualizado);
 });

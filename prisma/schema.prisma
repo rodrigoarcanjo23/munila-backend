@@ -26,7 +26,26 @@ model Localizacao {
   zona       String
   corredor   String
   prateleira String
+  armazemId  String?   // ✨ FASE 2
+  armazem    Armazem?  @relation(fields: [armazemId], references: [id])
   estoques   Estoque[]
+}
+
+// ============================================================
+// ✨ FASE 2: ARMAZÉNS (multiarmazém: Munila, VIAPRO...)
+// ============================================================
+model Armazem {
+  id         String         @id @default(uuid())
+  codigo     String         @unique
+  nome       String
+  endereco   String?
+  padrao     Boolean        @default(false)
+  ativo      Boolean        @default(true)
+  createdAt  DateTime       @default(now())
+  estoques   Estoque[]
+  locais     Localizacao[]
+  ordens     OrdemTransferencia[]
+  inventarios Inventario[]
 }
 
 model Usuario {
@@ -67,6 +86,12 @@ model Produto {
   leadTimeDias        Int?
   validade            DateTime?
 
+  // ✨ FASE 2: dados fiscais (preparação para NF-e)
+  ncm                 String?
+  cest                String?
+  origemFiscal        Int?           // 0 nacional, 1 importação direta, 2 importada adquirida no mercado interno...
+  cfopPadrao          String?
+
   fornecedorId        String?
   fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
   categoriaId         String
@@ -102,6 +127,14 @@ model Estoque {
   localizacao   Localizacao? @relation(fields: [localizacaoId], references: [id])
   responsavelId String?
   responsavel   Usuario?     @relation(fields: [responsavelId], references: [id])
+
+  // ✨ FASE 2: saldo por armazém e por lote (FEFO)
+  armazemId     String?
+  armazem       Armazem?     @relation(fields: [armazemId], references: [id])
+  lote          String?
+  validade      DateTime?
+
+  @@index([produtoId, status])
 }
 
 model Movimentacao {
@@ -114,6 +147,11 @@ model Movimentacao {
   observacao          String?
   dataPrevistaRetorno DateTime?
   dataHora            DateTime  @default(now())
+
+  // ✨ FASE 2: rastreabilidade de armazém e lote
+  armazemId           String?
+  lote                String?
+  validade            DateTime?
 
   produto Produto @relation(fields: [produtoId], references: [id])
   usuario Usuario @relation(fields: [usuarioId], references: [id])
@@ -129,11 +167,13 @@ model Fornecedor {
   contatoNome String?
   telefone    String?
   email       String?
+  prazoPagamentoDias Int?    // ✨ FASE 2: prazo padrão para o contas a pagar
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
   produtos      Produto[]
   pedidosCompra PedidoCompra[]
+  titulos       Titulo[]
 }
 
 model PedidoCompra {
@@ -153,6 +193,7 @@ model PedidoCompra {
   divergencia        String?
   dataRecebimento    DateTime?
   observacao         String?
+  titulos            Titulo[]
 
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -181,6 +222,8 @@ model OrdemTransferencia {
 
   // ✨ NOVOS CAMPOS (produtividade da separação)
   observacao    String?
+  armazemId     String?   // ✨ FASE 2: armazém de onde sai / para onde entra
+  armazem       Armazem?  @relation(fields: [armazemId], references: [id])
   iniciadaEm    DateTime?
   concluidaEm   DateTime?
 
@@ -241,6 +284,8 @@ model Inventario {
   cego          Boolean          @default(true)
   responsavelId String?
   responsavel   Usuario?         @relation("InventarioResponsavel", fields: [responsavelId], references: [id])
+  armazemId     String?          // ✨ FASE 2
+  armazem       Armazem?         @relation(fields: [armazemId], references: [id])
   itens         InventarioItem[]
   createdAt     DateTime         @default(now())
   concluidoEm   DateTime?
@@ -258,6 +303,70 @@ model InventarioItem {
   contadoPor        Usuario?   @relation("InventarioContador", fields: [contadoPorId], references: [id])
   contadoEm         DateTime?
   ajustado          Boolean    @default(false)
+  lotesContados     Json?      // ✨ FASE 2: [{ lote, validade, quantidade }] quando a contagem é feita por lote
 
   @@unique([inventarioId, produtoId])
+}
+
+// ============================================================
+// ✨ FASE 2: FINANCEIRO (contas a pagar / receber e fluxo de caixa)
+// ============================================================
+model ContaBancaria {
+  id           String   @id @default(uuid())
+  nome         String
+  saldoInicial Float    @default(0)
+  ativa        Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  titulos      Titulo[]
+}
+
+model Titulo {
+  id             String         @id @default(uuid())
+  tipo           String         // PAGAR | RECEBER
+  descricao      String
+  categoria      String?        // Fornecedores, Frete, Impostos, Vendas...
+  documento      String?        // NF, boleto, pedido
+  parcela        String?        // "1/3"
+  valor          Float
+  vencimento     DateTime
+  status         String         @default("Aberto") // Aberto | Pago | Cancelado
+  valorPago      Float?
+  dataPagamento  DateTime?
+  formaPagamento String?
+  observacao     String?
+  pessoa         String?        // cliente ou favorecido quando não é fornecedor cadastrado
+  fornecedorId   String?
+  fornecedor     Fornecedor?    @relation(fields: [fornecedorId], references: [id])
+  pedidoCompraId String?
+  pedidoCompra   PedidoCompra?  @relation(fields: [pedidoCompraId], references: [id])
+  contaId        String?
+  conta          ContaBancaria? @relation(fields: [contaId], references: [id])
+  usuarioNome    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([tipo, status, vencimento])
+}
+
+// ============================================================
+// ✨ FASE 2: DADOS DA EMPRESA (base para a emissão de NF-e)
+// ============================================================
+model ConfiguracaoEmpresa {
+  id                String   @id @default("empresa")
+  razaoSocial       String?
+  nomeFantasia      String?
+  cnpj              String?
+  inscricaoEstadual String?
+  regimeTributario  String?  // Simples Nacional | Lucro Presumido | Lucro Real
+  cep               String?
+  logradouro        String?
+  numero            String?
+  bairro            String?
+  cidade            String?
+  uf                String?
+  telefone          String?
+  email             String?
+  emissorNFe        String?  // provedor escolhido (ex.: Focus NFe) — integração futura
+  ambienteNFe       String?  @default("homologacao")
+  updatedAt         DateTime @updatedAt
 }

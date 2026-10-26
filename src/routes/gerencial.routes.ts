@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { num } from '../lib/http';
 import {
-  STATUS, TIPOS_CONSUMO, consumoPorProduto, diasAtras, ehEntrada, estoqueMinimoDe, garantirEstoqueDisponivel, saldosDisponiveis,
+  STATUS, TIPOS_CONSUMO, TIPOS_TRANSFERENCIA, consumoPorProduto, diasAtras, ehEntrada, estoqueMinimoDe, garantirEstoqueDisponivel, saldosDisponiveis,
 } from '../lib/estoque';
 
 const router = Router();
@@ -79,6 +79,7 @@ router.get('/dashboard/painel', async (req, res) => {
   for (const m of movsPeriodo) {
     const k = diaBR(new Date(m.dataHora));
     if (!serie[k]) continue;
+    if (TIPOS_TRANSFERENCIA.includes(m.tipoAcao)) continue; // transferência entre armazéns não é entrada nem saída da empresa
     if (ehEntrada(m.tipoAcao)) serie[k].entradas += m.quantidade; else serie[k].saidas += m.quantidade;
     if (TIPOS_CONSUMO.includes(m.tipoAcao)) consumo.set(m.produtoId, (consumo.get(m.produtoId) || 0) + m.quantidade);
   }
@@ -86,12 +87,24 @@ router.get('/dashboard/painel', async (req, res) => {
     .sort((a, b) => b[1] - a[1]).slice(0, 8)
     .map(([id, qtd]) => ({ produtoId: id, nome: prodMap.get(id)?.nome || '-', sku: prodMap.get(id)?.sku || '-', quantidade: qtd }));
 
-  // ---- Validade
+  // ---- Validade (por lote; usa a validade do cadastro quando o lote não tem)
   let vencidos = 0, vencendo30 = 0;
-  for (const p of produtos) {
-    if (!p.validade || (saldoPorProduto.get(p.id) || 0) <= 0) continue;
-    if (p.validade < hoje) vencidos++; else if (p.validade <= em30) vencendo30++;
+  for (const e of estoques) {
+    if (e.status !== STATUS.DISPONIVEL || e.quantidade <= 0) continue;
+    const v = e.validade ?? prodMap.get(e.produtoId)?.validade;
+    if (!v) continue;
+    if (v < hoje) vencidos++; else if (v <= em30) vencendo30++;
   }
+
+  // ---- Financeiro (✨ FASE 2)
+  const titulosAbertos = await prisma.titulo.findMany({ where: { status: 'Aberto' }, select: { tipo: true, valor: true, vencimento: true } });
+  const em7 = new Date(Date.now() + 7 * 86400000);
+  const somaT = (tipo: string, f: (d: Date) => boolean) => titulosAbertos.filter(t => t.tipo === tipo && f(t.vencimento)).reduce((a, t) => a + t.valor, 0);
+  const hojeZero = new Date(); hojeZero.setHours(0, 0, 0, 0);
+  const financeiro = {
+    pagarVencido: somaT('PAGAR', d => d < hojeZero), receberVencido: somaT('RECEBER', d => d < hojeZero),
+    pagar7dias: somaT('PAGAR', d => d >= hojeZero && d <= em7), receber7dias: somaT('RECEBER', d => d >= hojeZero && d <= em7),
+  };
 
   // ---- Compras e WMS
   const caixaComprometido = pedidos.reduce((a, p) => a + p.custoTotal, 0);
@@ -111,7 +124,7 @@ router.get('/dashboard/painel', async (req, res) => {
     osEmSeparacao: ordens.filter(o => o.status === 'Em Separação').length,
     osUrgentes: ordens.filter(o => o.status !== 'Concluída' && o.prioridade === 'Urgente').length,
     osConcluidasPeriodo: ordens.filter(o => o.status === 'Concluída' && o.concluidaEm && o.concluidaEm >= inicioPeriodo).length,
-    tempoMedioSeparacaoMin, inventariosAbertos, vencidos, vencendo30,
+    tempoMedioSeparacaoMin, inventariosAbertos, vencidos, vencendo30, ...financeiro,
   };
 
   const alertas: { nivel: 'critico' | 'atencao' | 'info'; titulo: string; rota: string }[] = [];
@@ -121,6 +134,8 @@ router.get('/dashboard/painel', async (req, res) => {
   if (vencendo30) alertas.push({ nivel: 'atencao', titulo: `${vencendo30} produto(s) vencem em até 30 dias`, rota: '/validade' });
   if (kpis.osUrgentes) alertas.push({ nivel: 'critico', titulo: `${kpis.osUrgentes} ordem(ns) urgente(s) em aberto`, rota: '/separacao' });
   if (pedidosAtrasados) alertas.push({ nivel: 'atencao', titulo: `${pedidosAtrasados} pedido(s) de compra atrasado(s)`, rota: '/compras' });
+  if (financeiro.pagarVencido > 0) alertas.push({ nivel: 'critico', titulo: `Contas a pagar vencidas: ${financeiro.pagarVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
+  if (financeiro.receberVencido > 0) alertas.push({ nivel: 'atencao', titulo: `Recebimentos em atraso: ${financeiro.receberVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
   if (inventariosAbertos) alertas.push({ nivel: 'info', titulo: `${inventariosAbertos} inventário(s) em andamento`, rota: '/inventario' });
 
   return res.json({
@@ -178,20 +193,21 @@ router.get('/gerencial/curva-abc', async (req, res) => {
   return res.json({ parametros: { dias, criterio, corteA, corteB }, total, resumo, itens });
 });
 
-/** ✨ NOVO: controle de validade (produtos com data de validade e saldo). */
+/** ✨ Controle de validade — FASE 2: por lote e armazém (validade do lote, ou do cadastro do produto). */
 router.get('/gerencial/validade', async (_req, res) => {
-  const [produtos, saldos] = await Promise.all([
-    prisma.produto.findMany({ where: { validade: { not: null } }, include: { categoria: true } }),
-    saldosDisponiveis(),
-  ]);
+  const linhas = await prisma.estoque.findMany({
+    where: { status: STATUS.DISPONIVEL, quantidade: { gt: 0 }, OR: [{ validade: { not: null } }, { produto: { validade: { not: null } } }] },
+    include: { produto: { include: { categoria: true } }, armazem: true },
+  });
   const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
-  const itens = produtos
-    .map(p => {
-      const dias = Math.floor((p.validade!.getTime() - hoje.getTime()) / 86400000);
-      const saldo = saldos.get(p.id) || 0;
+  const itens = linhas
+    .map(l => {
+      const p = l.produto;
+      const validade = (l.validade ?? p.validade)!;
+      const dias = Math.floor((validade.getTime() - hoje.getTime()) / 86400000);
       return {
-        produtoId: p.id, sku: p.sku, nome: p.nome, lote: p.lote, categoria: p.categoria?.nome || '-', endereco: p.enderecoLocalizacao,
-        validade: p.validade, diasParaVencer: dias, saldo, valor: saldo * (p.precoCusto || 0),
+        id: l.id, produtoId: p.id, sku: p.sku, nome: p.nome, lote: l.lote ?? p.lote, categoria: p.categoria?.nome || '-', endereco: p.enderecoLocalizacao,
+        armazem: l.armazem?.nome ?? '-', validade, diasParaVencer: dias, saldo: l.quantidade, valor: l.quantidade * (p.precoCusto || 0),
         faixa: dias < 0 ? 'Vencido' : dias <= 30 ? 'Até 30 dias' : dias <= 60 ? '31 a 60 dias' : dias <= 90 ? '61 a 90 dias' : 'Acima de 90 dias',
       };
     })

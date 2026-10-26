@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { badRequest, notFound, num, dataOuNull } from '../lib/http';
+import { criarTitulos, parcelar, somenteDigitos, vencimentoPadrao } from '../lib/financeiro';
 import { usuarioDaRequisicao } from '../lib/auth';
 import {
-  consumoPorProduto, diasAtras, estoqueMinimoDe, gerarCodigoPedidoCompra, gerarCodigoRequisicao, linhaEstoque, saldosDisponiveis,
+  consumoPorProduto, diasAtras, entradaEstoque, estoqueMinimoDe, gerarCodigoPedidoCompra, gerarCodigoRequisicao, registrarMovimentos, saldosDisponiveis,
 } from '../lib/estoque';
 import { enviarEmail, htmlPedidoCompra } from '../lib/notificacoes';
 
@@ -94,14 +95,25 @@ router.put('/pedidos-compra/:id/receber', async (req, res) => {
     });
 
     if (recebida > 0) {
-      const disponivel = await linhaEstoque(tx, pedido.produtoId);
-      await tx.estoque.update({ where: { id: disponivel.id }, data: { quantidade: { increment: recebida } } });
-      await tx.movimentacao.create({
-        data: {
-          produtoId: pedido.produtoId, usuarioId, quantidade: recebida, tipoAcao: 'Entrada de mercadoria', codigo: await gerarCodigoRequisicao(tx, 'RE'),
-          observacao: `Recebimento via Pedido ${pedido.codigo || ''}${divergencia ? ` — ${divergencia}` : ''}`,
-        },
+      // ✨ FASE 2: entra no armazém escolhido, com lote e validade
+      const parte = await entradaEstoque(tx, {
+        produtoId: pedido.produtoId, quantidade: recebida, armazemId: req.body?.armazemId, lote: req.body?.lote, validade: dataOuNull(req.body?.validade),
       });
+      await registrarMovimentos(tx, {
+        produtoId: pedido.produtoId, usuarioId, tipoAcao: 'Entrada de mercadoria', codigo: await gerarCodigoRequisicao(tx, 'RE'),
+        observacao: `Recebimento via Pedido ${pedido.codigo || ''}${divergencia ? ` — ${divergencia}` : ''}`,
+      }, [parte]);
+    }
+
+    // ✨ FASE 2: lança o contas a pagar (valor proporcional ao recebido), parcelado se pedido
+    if (req.body?.gerarTitulo !== false && recebida > 0 && pedido.custoTotal > 0) {
+      const fornecedor = await tx.fornecedor.findUnique({ where: { id: pedido.fornecedorId } });
+      const valor = (pedido.custoTotal / pedido.quantidade) * recebida;
+      const primeiro = dataOuNull(req.body?.vencimento) ?? vencimentoPadrao(fornecedor?.prazoPagamentoDias);
+      await criarTitulos(tx, parcelar(valor, num(req.body?.parcelas, 1), primeiro).map(p => ({
+        tipo: 'PAGAR' as const, descricao: `Pedido ${pedido.codigo || ''} — ${fornecedor?.nomeEmpresa || 'fornecedor'}`, categoria: 'Fornecedores',
+        documento: req.body?.notaFiscal || pedido.codigo, fornecedorId: pedido.fornecedorId, pedidoCompraId: pedido.id, usuarioNome: req.usuario?.nome, ...p,
+      })));
     }
     // Atualiza o custo unitário do produto com o custo do pedido (custo da última entrada).
     if (req.body?.atualizarCusto && pedido.quantidade > 0) {
@@ -174,20 +186,33 @@ router.post('/recebimentos/nfe', async (req, res) => {
     for (const item of itens) {
       const qtd = Math.round(num(item.quantidade));
       if (!item.produtoId || qtd <= 0) continue;
-      const disponivel = await linhaEstoque(tx, item.produtoId);
-      await tx.estoque.update({ where: { id: disponivel.id }, data: { quantidade: { increment: qtd } } });
-      await tx.movimentacao.create({
-        data: {
-          produtoId: item.produtoId, usuarioId, quantidade: qtd, tipoAcao: 'Entrada de mercadoria', codigo,
-          observacao: `NF-e ${numero || 's/n'}${emitente ? ` — ${emitente}` : ''}${chave ? ` (chave ${chave})` : ''}`,
-        },
-      });
+      // ✨ FASE 2: armazém de destino + lote/validade lidos do grupo <rastro> da NF-e
+      const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: qtd, armazemId: req.body?.armazemId, lote: item.lote, validade: dataOuNull(item.validade) });
+      await registrarMovimentos(tx, {
+        produtoId: item.produtoId, usuarioId, tipoAcao: 'Entrada de mercadoria', codigo,
+        observacao: `NF-e ${numero || 's/n'}${emitente ? ` — ${emitente}` : ''}${chave ? ` (chave ${chave})` : ''}`,
+      }, [parte]);
       if (atualizarCusto && num(item.custoUnitario) > 0) {
         await tx.produto.update({ where: { id: item.produtoId }, data: { precoCusto: num(item.custoUnitario) } });
       }
       unidades += qtd;
     }
-    return { codigo, unidades, itens: itens.length };
+
+    // ✨ FASE 2: duplicatas da nota (<cobr><dup>) viram contas a pagar
+    let titulos = 0;
+    const duplicatas: any[] = Array.isArray(req.body?.duplicatas) ? req.body.duplicatas : [];
+    if (req.body?.gerarTitulos !== false && duplicatas.length) {
+      const cnpj = somenteDigitos(req.body?.cnpjEmitente);
+      const fornecedores = cnpj ? await tx.fornecedor.findMany({ where: { cnpj: { not: null } } }) : [];
+      const fornecedor = fornecedores.find(f => somenteDigitos(f.cnpj) === cnpj);
+      const criados = await criarTitulos(tx, duplicatas.filter(d => num(d.valor) > 0).map((d, i) => ({
+        tipo: 'PAGAR' as const, descricao: `NF-e ${numero || 's/n'} — ${emitente || 'fornecedor'}`, categoria: 'Fornecedores', documento: `NF ${numero || ''}`.trim(),
+        parcela: duplicatas.length > 1 ? `${i + 1}/${duplicatas.length}` : d.numero || null, valor: num(d.valor), vencimento: dataOuNull(d.vencimento) ?? vencimentoPadrao(fornecedor?.prazoPagamentoDias),
+        fornecedorId: fornecedor?.id ?? null, pessoa: fornecedor ? null : emitente || null, usuarioNome: req.usuario?.nome,
+      })));
+      titulos = criados.length;
+    }
+    return { codigo, unidades, itens: itens.length, titulos };
   });
   return res.status(201).json(resultado);
 });

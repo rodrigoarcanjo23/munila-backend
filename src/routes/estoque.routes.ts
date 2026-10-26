@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
-import { badRequest, num } from '../lib/http';
+import { badRequest, dataOuNull, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
-import { STATUS, TIPOS_ENTRADA, TIPOS_SAIDA, garantirEstoqueDisponivel, gerarCodigoRequisicao, linhaEstoque } from '../lib/estoque';
+import {
+  STATUS, TIPOS_ENTRADA, TIPOS_SAIDA, armazemPadrao, entradaEstoque, garantirEstoqueDisponivel, gerarCodigoRequisicao,
+  linhaEstoque, lotesFEFO, registrarMovimentos, saidaFEFO,
+} from '../lib/estoque';
 
 const router = Router();
 const USUARIO_PUBLICO = { select: { id: true, nome: true, cargo: true } } as const;
@@ -10,28 +13,83 @@ const USUARIO_PUBLICO = { select: { id: true, nome: true, cargo: true } } as con
 router.get('/estoque', async (_req, res) => {
   await garantirEstoqueDisponivel();
   const inventario = await prisma.estoque.findMany({
-    include: { produto: { include: { categoria: true } }, localizacao: true, responsavel: USUARIO_PUBLICO },
+    include: { produto: { include: { categoria: true } }, localizacao: true, responsavel: USUARIO_PUBLICO, armazem: true },
   });
   return res.json(inventario);
 });
 
 /** Cria saldo inicial. Se já existir a linha "Disponível" zerada (criada automaticamente), reaproveita. */
 router.post('/estoque', async (req, res) => {
-  const { produtoId, quantidade, status, localizacaoId, responsavelId } = req.body || {};
+  const { produtoId, quantidade, status, localizacaoId, responsavelId, armazemId, lote, validade } = req.body || {};
   if (!produtoId) throw badRequest('Produto obrigatório.');
   const st = status || STATUS.DISPONIVEL;
-  const existente = await prisma.estoque.findFirst({ where: { produtoId, status: st } });
+  const arm = armazemId || (await armazemPadrao());
+  const existente = await prisma.estoque.findFirst({ where: { produtoId, status: st, armazemId: arm, lote: lote || null } });
   if (existente && st === STATUS.DISPONIVEL && existente.quantidade === 0) {
     const atualizado = await prisma.estoque.update({
       where: { id: existente.id },
-      data: { quantidade: Math.round(num(quantidade)), localizacaoId: localizacaoId || existente.localizacaoId },
+      data: { quantidade: Math.round(num(quantidade)), localizacaoId: localizacaoId || existente.localizacaoId, validade: dataOuNull(validade) ?? existente.validade },
     });
     return res.status(201).json(atualizado);
   }
   const novo = await prisma.estoque.create({
-    data: { produtoId, quantidade: Math.round(num(quantidade)), status: st, localizacaoId: localizacaoId || null, responsavelId: responsavelId || null },
+    data: {
+      produtoId, quantidade: Math.round(num(quantidade)), status: st, localizacaoId: localizacaoId || null, responsavelId: responsavelId || null,
+      armazemId: arm, lote: lote ? String(lote).trim().toUpperCase() : null, validade: dataOuNull(validade),
+    },
   });
   return res.status(201).json(novo);
+});
+
+/** ✨ FASE 2: lotes disponíveis de um produto na ordem FEFO. ?produtoId=&armazemId= */
+router.get('/estoque/lotes', async (req, res) => {
+  const produtoId = String(req.query.produtoId || '');
+  if (!produtoId) throw badRequest('Informe o produto.');
+  const linhas = await lotesFEFO(prisma, produtoId, (req.query.armazemId as string) || null);
+  return res.json(linhas.map(l => ({ estoqueId: l.id, lote: l.lote, validade: l.validade ?? l.produto.validade, quantidade: l.quantidade, armazemId: l.armazemId })));
+});
+
+/** ✨ FASE 2: entrada avulsa com armazém, lote e validade. */
+router.post('/estoque/entrada', async (req, res) => {
+  const usuarioId = usuarioDaRequisicao(req);
+  const { produtoId, armazemId, lote, observacao, tipoAcao } = req.body || {};
+  const quantidade = Math.round(num(req.body?.quantidade));
+  if (!usuarioId) throw badRequest('Usuário não identificado.');
+  if (!produtoId || quantidade <= 0) throw badRequest('Informe produto e quantidade.');
+  const tipo = ['Entrada de mercadoria', 'Devolução VIAPRO', 'Ajuste de Entrada de Inventário'].includes(tipoAcao) ? tipoAcao : 'Entrada de mercadoria';
+
+  const mov = await prisma.$transaction(async tx => {
+    const parte = await entradaEstoque(tx, { produtoId, quantidade, armazemId, lote, validade: dataOuNull(req.body?.validade) });
+    const codigo = await gerarCodigoRequisicao(tx, 'RE');
+    await registrarMovimentos(tx, { produtoId, usuarioId, tipoAcao: tipo, codigo, observacao: observacao || `${tipo} registrada.` }, [parte]);
+    return { codigo, ...parte };
+  });
+  return res.status(201).json(mov);
+});
+
+/** ✨ FASE 2: transferência entre armazéns, preservando lote e validade (FEFO na origem). */
+router.post('/estoque/transferencia', async (req, res) => {
+  const usuarioId = usuarioDaRequisicao(req);
+  const { produtoId, origemId, destinoId, lote, observacao } = req.body || {};
+  const quantidade = Math.round(num(req.body?.quantidade));
+  if (!usuarioId) throw badRequest('Usuário não identificado.');
+  if (!produtoId || !origemId || !destinoId || quantidade <= 0) throw badRequest('Informe produto, origem, destino e quantidade.');
+  if (origemId === destinoId) throw badRequest('Origem e destino devem ser diferentes.');
+
+  const resultado = await prisma.$transaction(async tx => {
+    const [origem, destino, produto] = await Promise.all([
+      tx.armazem.findUnique({ where: { id: origemId } }), tx.armazem.findUnique({ where: { id: destinoId } }), tx.produto.findUnique({ where: { id: produtoId } }),
+    ]);
+    if (!origem || !destino || !produto) throw new Error('Armazém ou produto não encontrado.');
+    const codigo = await gerarCodigoRequisicao(tx, 'TR');
+    const partes = await saidaFEFO(tx, { produtoId, quantidade, armazemId: origemId, lote, rotulo: `[${produto.sku}] em ${origem.nome}` });
+    await registrarMovimentos(tx, { produtoId, usuarioId, tipoAcao: 'Transferência (saída)', codigo, observacao: `Para ${destino.nome}${observacao ? ` — ${observacao}` : ''}` }, partes);
+    const entradas = [];
+    for (const p of partes) entradas.push(await entradaEstoque(tx, { produtoId, quantidade: p.quantidade, armazemId: destinoId, lote: p.lote, validade: p.validade }));
+    await registrarMovimentos(tx, { produtoId, usuarioId, tipoAcao: 'Transferência (entrada)', codigo, observacao: `De ${origem.nome}${observacao ? ` — ${observacao}` : ''}` }, entradas);
+    return { codigo, partes };
+  });
+  return res.status(201).json(resultado);
 });
 
 /** Histórico de movimentações. Aceita filtros opcionais ?inicio=AAAA-MM-DD&fim=AAAA-MM-DD&produtoId=&limite= */
@@ -57,7 +115,7 @@ router.get('/logs-auditoria', async (_req, res) => {
 
 /** Movimentação manual sobre uma linha de estoque (mesmo contrato usado pelo web e pelo mobile). */
 router.post('/movimentacoes/operacao', async (req, res) => {
-  const { produtoId, estoqueId, tipoAcao, observacao } = req.body || {};
+  const { estoqueId, tipoAcao, observacao } = req.body || {};
   const usuarioId = usuarioDaRequisicao(req);
   const qtd = Math.round(num(req.body?.quantidade));
   if (!usuarioId) throw badRequest('Usuário não identificado.');
@@ -66,16 +124,15 @@ router.post('/movimentacoes/operacao', async (req, res) => {
   const resultado = await prisma.$transaction(async tx => {
     const estoque = await tx.estoque.findUnique({ where: { id: estoqueId } });
     if (!estoque) throw new Error('Estoque não encontrado.');
+    const lugar = { armazemId: estoque.armazemId, lote: estoque.lote, validade: estoque.validade };
     let novoSaldo = estoque.quantidade;
     let codigo: string;
 
     if (tipoAcao === 'Retorno de demonstração') {
-      // ✨ NOVO: devolve ao saldo disponível um item que estava em demonstração.
       if (estoque.status !== STATUS.DEMONSTRACAO) throw new Error('Selecione um item que esteja em demonstração.');
       if (estoque.quantidade < qtd) throw new Error('Quantidade maior que a registrada em demonstração.');
       novoSaldo -= qtd;
-      const disponivel = await linhaEstoque(tx, estoque.produtoId);
-      await tx.estoque.update({ where: { id: disponivel.id }, data: { quantidade: { increment: qtd } } });
+      await entradaEstoque(tx, { produtoId: estoque.produtoId, quantidade: qtd, ...lugar });
       codigo = await gerarCodigoRequisicao(tx, 'RE');
     } else if (['Entrada de mercadoria', 'Devolução VIAPRO', 'Ajuste de Entrada de Inventário'].includes(tipoAcao)) {
       novoSaldo += qtd;
@@ -85,10 +142,10 @@ router.post('/movimentacoes/operacao', async (req, res) => {
       novoSaldo -= qtd;
       codigo = await gerarCodigoRequisicao(tx, 'RS');
       if (tipoAcao === 'Saída para demonstração') {
-        await tx.estoque.create({ data: { produtoId: estoque.produtoId, quantidade: qtd, status: STATUS.DEMONSTRACAO, responsavelId: usuarioId } });
+        await tx.estoque.create({ data: { produtoId: estoque.produtoId, quantidade: qtd, status: STATUS.DEMONSTRACAO, responsavelId: usuarioId, ...lugar } });
       }
       if (tipoAcao === 'Perdas/Avarias') {
-        const ruptura = await linhaEstoque(tx, estoque.produtoId, STATUS.RUPTURA);
+        const ruptura = await linhaEstoque(tx, estoque.produtoId, STATUS.RUPTURA, lugar);
         await tx.estoque.update({ where: { id: ruptura.id }, data: { quantidade: { increment: qtd } } });
       }
     } else {
@@ -97,15 +154,15 @@ router.post('/movimentacoes/operacao', async (req, res) => {
 
     await tx.estoque.update({ where: { id: estoque.id }, data: { quantidade: novoSaldo } });
     return tx.movimentacao.create({
-      data: { produtoId: produtoId || estoque.produtoId, usuarioId, quantidade: qtd, tipoAcao, codigo, observacao: observacao || `${tipoAcao} registrada.` },
+      data: { produtoId: estoque.produtoId, usuarioId, quantidade: qtd, tipoAcao, codigo, observacao: observacao || `${tipoAcao} registrada.`, ...lugar },
     });
   });
   return res.status(201).json(resultado);
 });
 
-/** Produção pela receita (composição) cadastrada no catálogo. */
+/** Produção pela receita (composição): consome matéria-prima por FEFO e dá entrada no acabado (com lote opcional). */
 router.post('/producao/executar', async (req, res) => {
-  const { produtoFinalId } = req.body || {};
+  const { produtoFinalId, armazemId, lote } = req.body || {};
   const usuarioId = usuarioDaRequisicao(req);
   const quantidadeProduzir = Math.round(num(req.body?.quantidadeProduzir));
   if (!usuarioId) throw badRequest('Usuário não identificado.');
@@ -117,23 +174,15 @@ router.post('/producao/executar', async (req, res) => {
     const codigoSaida = await gerarCodigoRequisicao(tx, 'RS');
 
     for (const item of composicao) {
-      const necessario = item.quantidade * quantidadeProduzir;
-      const estoqueItem = await tx.estoque.findFirst({ where: { produtoId: item.produtoFilhoId, status: STATUS.DISPONIVEL } });
-      if (!estoqueItem || estoqueItem.quantidade < necessario) {
-        throw new Error(`Estoque insuficiente de [${item.produtoFilho.sku}] ${item.produtoFilho.nome}: necessário ${necessario}, disponível ${estoqueItem?.quantidade ?? 0}.`);
-      }
-      await tx.estoque.update({ where: { id: estoqueItem.id }, data: { quantidade: { decrement: necessario } } });
-      await tx.movimentacao.create({
-        data: { produtoId: item.produtoFilhoId, usuarioId, quantidade: necessario, tipoAcao: 'Saída para produção', codigo: codigoSaida, observacao: 'Matéria-prima consumida' },
+      const partes = await saidaFEFO(tx, {
+        produtoId: item.produtoFilhoId, quantidade: item.quantidade * quantidadeProduzir, armazemId, rotulo: `[${item.produtoFilho.sku}] ${item.produtoFilho.nome}`,
       });
+      await registrarMovimentos(tx, { produtoId: item.produtoFilhoId, usuarioId, tipoAcao: 'Saída para produção', codigo: codigoSaida, observacao: 'Matéria-prima consumida' }, partes);
     }
 
-    const final = await linhaEstoque(tx, produtoFinalId);
-    await tx.estoque.update({ where: { id: final.id }, data: { quantidade: { increment: quantidadeProduzir } } });
+    const parte = await entradaEstoque(tx, { produtoId: produtoFinalId, quantidade: quantidadeProduzir, armazemId, lote, validade: dataOuNull(req.body?.validade) });
     const codigo = await gerarCodigoRequisicao(tx, 'RE');
-    await tx.movimentacao.create({
-      data: { produtoId: produtoFinalId, usuarioId, quantidade: quantidadeProduzir, tipoAcao: 'Entrada por produção', codigo, observacao: `Lote de produção finalizado (consumo ${codigoSaida}).` },
-    });
+    await registrarMovimentos(tx, { produtoId: produtoFinalId, usuarioId, tipoAcao: 'Entrada por produção', codigo, observacao: `Lote de produção finalizado (consumo ${codigoSaida}).` }, [parte]);
     return { success: true, mensagem: `Produção finalizada com sucesso (${codigo}).` };
   });
   return res.json(resultado);
