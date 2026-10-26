@@ -15,6 +15,7 @@ import transformacaoRoutes from './routes/transformacao.routes';
 import armazensRoutes from './routes/armazens.routes';
 import financeiroRoutes from './routes/financeiro.routes';
 import empresaRoutes from './routes/empresa.routes';
+import biRoutes from './routes/bi.routes';
 
 export function criarApp() {
   const app = express();
@@ -38,6 +39,7 @@ export function criarApp() {
   app.use(armazensRoutes);       // ✨ /armazens
   app.use(financeiroRoutes);     // ✨ /financeiro/*
   app.use(empresaRoutes);        // ✨ /empresa, /fiscal/pendencias
+  app.use(biRoutes);             // ✨ /bi/painel
   app.use('/fornecedores', fornecedorRoutes);
   app.use('/transformacao', transformacaoRoutes);
 
