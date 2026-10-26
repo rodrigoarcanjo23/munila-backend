@@ -18,6 +18,7 @@ export const TIPOS_ENTRADA = [
   'Entrada por produção',
   'Retorno de demonstração',
   'Transferência (entrada)',
+  'Estorno de produção (entrada)',
 ];
 
 /** Tipos que retiram do saldo disponível. */
@@ -28,6 +29,7 @@ export const TIPOS_SAIDA = [
   'Perdas/Avarias',
   'Saída para produção',
   'Transferência (saída)',
+  'Estorno de produção (saída)',
 ];
 
 /** Saídas que representam consumo real (usadas em Curva ABC e sugestão de compras). */
@@ -85,6 +87,12 @@ export async function gerarCodigoOS(db: Db) {
   const ano = anoAtual();
   const regs = await db.ordemTransferencia.findMany({ where: { codigo: { startsWith: 'OS', endsWith: ano } }, select: { codigo: true } });
   return proximo(regs.map(r => r.codigo), 'OS', ano);
+}
+
+export async function gerarCodigoOP(db: Db) {
+  const ano = anoAtual();
+  const regs = await db.ordemProducao.findMany({ where: { codigo: { startsWith: 'OP', endsWith: ano } }, select: { codigo: true } });
+  return proximo(regs.map(r => r.codigo), 'OP', ano);
 }
 
 export async function gerarCodigoInventario(db: Db) {

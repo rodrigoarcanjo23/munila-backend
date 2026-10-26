@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { num } from '../lib/http';
+import { media, desvio, previsaoHolt } from '../lib/previsao';
 import { STATUS, TIPOS_CONSUMO, TIPOS_TRANSFERENCIA, ehEntrada, estoqueMinimoDe, garantirEstoqueDisponivel } from '../lib/estoque';
 
 // ============================================================
@@ -18,12 +19,6 @@ const fmtBRL = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', cur
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const pctBR = (v: number) => `${r1(v).toLocaleString('pt-BR')}%`;
 const r2 = (v: number) => Math.round(v * 100) / 100;
-const media = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-const desvio = (xs: number[]) => {
-  if (xs.length < 2) return 0;
-  const m = media(xs);
-  return Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1));
-};
 const mediana = (xs: number[]) => {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -37,23 +32,6 @@ const DIAS_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function diaHoraBR(d: Date) {
   const p = partesBR.formatToParts(d);
   return { dia: DIAS_EN.indexOf(p.find(x => x.type === 'weekday')!.value), hora: Number(p.find(x => x.type === 'hour')!.value) % 24 };
-}
-
-/** Suavização exponencial de Holt (nível + tendência) com faixa de confiança de 80%. */
-function previsaoHolt(serie: number[], passos: number, alfa = 0.5, beta = 0.3) {
-  if (serie.length < 3) return { previsao: Array(passos).fill(media(serie)), erro: 0, tendencia: 0 };
-  let nivel = serie[0], tend = serie[1] - serie[0];
-  const residuos: number[] = [];
-  for (let i = 1; i < serie.length; i++) {
-    const prev = nivel + tend;
-    residuos.push(serie[i] - prev);
-    const novoNivel = alfa * serie[i] + (1 - alfa) * prev;
-    tend = beta * (novoNivel - nivel) + (1 - beta) * tend;
-    nivel = novoNivel;
-  }
-  const erro = desvio(residuos);
-  const previsao = Array.from({ length: passos }, (_, h) => Math.max(0, nivel + (h + 1) * tend));
-  return { previsao, erro, tendencia: tend };
 }
 
 router.get('/bi/painel', async (req, res) => {

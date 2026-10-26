@@ -46,6 +46,7 @@ model Armazem {
   locais     Localizacao[]
   ordens     OrdemTransferencia[]
   inventarios Inventario[]
+  ordensProducao OrdemProducao[]
 }
 
 model Usuario {
@@ -63,6 +64,9 @@ model Usuario {
   ordensSeparadas   OrdemTransferencia[] @relation("OrdensSeparadas")
   inventarios       Inventario[]         @relation("InventarioResponsavel")
   contagens         InventarioItem[]     @relation("InventarioContador")
+
+  ordensProducao    OrdemProducao[]       @relation("OPResponsavel")
+  apontamentos      ApontamentoProducao[] @relation("Apontamentos")
 }
 
 model Produto {
@@ -103,6 +107,11 @@ model Produto {
   ingredientes        Composicao[]   @relation("ProdutoPai")
   itensTransferencia  ItemOrdemTransferencia[]
   itensInventario     InventarioItem[]
+
+  // ✨ FASE 4: PCP
+  ordensProducao      OrdemProducao[]
+  componentesOP       OrdemProducaoComponente[]
+  planosProducao      PlanoProducao[]
 }
 
 model Composicao {
@@ -369,4 +378,98 @@ model ConfiguracaoEmpresa {
   emissorNFe        String?  // provedor escolhido (ex.: Focus NFe) — integração futura
   ambienteNFe       String?  @default("homologacao")
   updatedAt         DateTime @updatedAt
+}
+
+// ============================================================
+// ✨ FASE 4: PCP (planejamento e controle da produção)
+// ============================================================
+model RecursoProducao {
+  id            String          @id @default(uuid())
+  codigo        String          @unique
+  nome          String
+  tipo          String          @default("Linha") // Linha | Célula | Bancada | Terceiro
+  capacidadeDia Float           @default(0)       // unidades por dia
+  diasSemana    Int             @default(5)
+  eficiencia    Float           @default(85)      // % usada no cálculo de carga
+  ativo         Boolean         @default(true)
+  observacao    String?
+  createdAt     DateTime        @default(now())
+  ordens        OrdemProducao[]
+}
+
+model OrdemProducao {
+  id                  String                    @id @default(uuid())
+  codigo              String                    @unique
+  produtoId           String
+  produto             Produto                   @relation(fields: [produtoId], references: [id])
+  quantidadePlanejada Int
+  quantidadeProduzida Int                       @default(0)
+  quantidadeRefugo    Int                       @default(0)
+  status              String                    @default("Planejada") // Planejada | Liberada | Em produção | Pausada | Concluída | Cancelada
+  prioridade          String                    @default("Normal")
+  origem              String                    @default("Manual")    // Manual | Plano mestre | Sugestão
+  inicioPrevisto      DateTime?
+  entregaPrevista     DateTime?
+  iniciadaEm          DateTime?
+  concluidaEm         DateTime?
+  recursoId           String?
+  recurso             RecursoProducao?          @relation(fields: [recursoId], references: [id])
+  armazemId           String?
+  armazem             Armazem?                  @relation(fields: [armazemId], references: [id])
+  loteProducao        String?
+  validade            DateTime?
+  observacao          String?
+  motivoCancelamento  String?
+  responsavelId       String?
+  responsavel         Usuario?                  @relation("OPResponsavel", fields: [responsavelId], references: [id])
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  componentes         OrdemProducaoComponente[]
+  apontamentos        ApontamentoProducao[]
+
+  @@index([status])
+  @@index([produtoId])
+}
+
+model OrdemProducaoComponente {
+  id                  String        @id @default(uuid())
+  ordemId             String
+  ordem               OrdemProducao @relation(fields: [ordemId], references: [id], onDelete: Cascade)
+  produtoId           String
+  produto             Produto       @relation(fields: [produtoId], references: [id])
+  porUnidade          Int
+  quantidadePrevista  Int
+  quantidadeConsumida Int           @default(0)
+
+  @@unique([ordemId, produtoId])
+}
+
+model ApontamentoProducao {
+  id            String        @id @default(uuid())
+  ordemId       String
+  ordem         OrdemProducao @relation(fields: [ordemId], references: [id], onDelete: Cascade)
+  quantidade    Int
+  refugo        Int           @default(0)
+  minutos       Int?
+  lote          String?
+  observacao    String?
+  codigoEntrada String?
+  codigoConsumo String?
+  usuarioId     String
+  usuario       Usuario       @relation("Apontamentos", fields: [usuarioId], references: [id])
+  dataHora      DateTime      @default(now())
+
+  @@index([dataHora])
+}
+
+model PlanoProducao {
+  id         String   @id @default(uuid())
+  produtoId  String
+  produto    Produto  @relation(fields: [produtoId], references: [id])
+  semana     DateTime // segunda-feira da semana (00:00 UTC)
+  quantidade Int
+  observacao String?
+  updatedAt  DateTime @updatedAt
+
+  @@unique([produtoId, semana])
 }
