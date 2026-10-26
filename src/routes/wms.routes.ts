@@ -36,7 +36,8 @@ router.get('/wms/ordens/novas', async (req, res) => {
     orderBy: { createdAt: 'asc' },
     take: 20,
   });
-  return res.json({ agora: new Date(), ordens });
+  const pendentes = await prisma.ordemTransferencia.count({ where: { status: 'Pendente' } });
+  return res.json({ agora: new Date(), ordens, pendentes });
 });
 
 router.post('/wms/ordens', async (req, res) => {
