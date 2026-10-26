@@ -15,17 +15,48 @@ export function enviarEmail(para: string | null | undefined, assunto: string, ht
     .catch(err => console.error('Falha ao enviar e-mail:', err?.message));
 }
 
-/** Push via Expo para todos os aparelhos registrados (mesma lógica de antes, isolada aqui). */
-export async function enviarPush(titulo: string, corpo: string) {
+/** Canal Android usado para avisar de nova ordem de separação (som próprio e pop-up na tela). Precisa ser o mesmo do app. */
+export const CANAL_ORDENS = 'ordens-separacao';
+
+interface OpcoesPush {
+  /** Dados que o app recebe junto (ex.: { tipo: 'nova-os', ordemId }). */
+  data?: Record<string, unknown>;
+  /** Usuário que não deve receber (quem criou a ordem). */
+  excluirUsuarioId?: string | null;
+  /** Canal Android (define som e importância no aparelho). */
+  canal?: string;
+}
+
+/**
+ * Push via Expo para todos os aparelhos registrados.
+ * Tokens que a Expo devolve como "DeviceNotRegistered" (app desinstalado ou deslogado) são limpos do cadastro.
+ */
+export async function enviarPush(titulo: string, corpo: string, opcoes: OpcoesPush = {}) {
   try {
-    const operadores = await prisma.usuario.findMany({ where: { pushToken: { not: null } }, select: { pushToken: true } });
-    const tokens = operadores.map(o => o.pushToken).filter(Boolean) as string[];
-    if (tokens.length === 0) return;
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: tokens, title: titulo, body: corpo, sound: 'default', priority: 'high' }),
+    const usuarios = await prisma.usuario.findMany({
+      where: { pushToken: { not: null }, ...(opcoes.excluirUsuarioId ? { id: { not: opcoes.excluirUsuarioId } } : {}) },
+      select: { id: true, pushToken: true },
     });
+    const destinos = usuarios.filter(u => u.pushToken && /^Expo(nent)?PushToken\[/.test(u.pushToken));
+    if (destinos.length === 0) return;
+
+    for (let i = 0; i < destinos.length; i += 100) {
+      const lote = destinos.slice(i, i + 100);
+      const resp = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(lote.map(u => ({
+          to: u.pushToken, title: titulo, body: corpo, data: opcoes.data ?? {},
+          sound: 'default', priority: 'high', channelId: opcoes.canal, ttl: 3600,
+        }))),
+      });
+      const json: any = await resp.json().catch(() => null);
+      const tickets: any[] = Array.isArray(json?.data) ? json.data : [];
+      const invalidos = lote.filter((_, k) => tickets[k]?.status === 'error' && tickets[k]?.details?.error === 'DeviceNotRegistered').map(u => u.id);
+      if (invalidos.length) await prisma.usuario.updateMany({ where: { id: { in: invalidos } }, data: { pushToken: null } });
+      const outros = tickets.filter(t => t?.status === 'error' && t?.details?.error !== 'DeviceNotRegistered');
+      if (outros.length) console.error('Push com erro na Expo:', outros.map(t => t.message).join(' | '));
+    }
   } catch (err) {
     console.error('Falha ao disparar a notificação para a Expo:', err);
   }

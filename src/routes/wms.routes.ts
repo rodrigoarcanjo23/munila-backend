@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
 import { armazemPadrao, entradaEstoque, gerarCodigoOS, registrarMovimentos, saidaFEFO, sugerirFEFO } from '../lib/estoque';
-import { enviarPush } from '../lib/notificacoes';
+import { CANAL_ORDENS, enviarPush } from '../lib/notificacoes';
 
 const router = Router();
 
@@ -27,6 +27,18 @@ router.get('/wms/ordens', async (_req, res) => {
   return res.json(await prisma.ordemTransferencia.findMany({ include: INCLUDE_ORDEM, orderBy: { createdAt: 'desc' } }));
 });
 
+/** Leve, para o app checar a cada poucos segundos: ordens pendentes criadas depois de `desde`. */
+router.get('/wms/ordens/novas', async (req, res) => {
+  const desde = req.query.desde ? new Date(String(req.query.desde)) : new Date(Date.now() - 10 * 60000);
+  const ordens = await prisma.ordemTransferencia.findMany({
+    where: { status: 'Pendente', createdAt: { gt: isNaN(desde.getTime()) ? new Date(Date.now() - 10 * 60000) : desde } },
+    select: { id: true, codigo: true, tipo: true, prioridade: true, createdAt: true, solicitanteId: true, solicitante: { select: { nome: true } }, _count: { select: { itens: true } } },
+    orderBy: { createdAt: 'asc' },
+    take: 20,
+  });
+  return res.json({ agora: new Date(), ordens });
+});
+
 router.post('/wms/ordens', async (req, res) => {
   const { tipo, prioridade, observacao, armazemId } = req.body || {};
   const solicitanteId = req.usuario?.id || req.body?.solicitanteId;
@@ -39,11 +51,18 @@ router.post('/wms/ordens', async (req, res) => {
         codigo: await gerarCodigoOS(tx), solicitanteId, status: 'Pendente', tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal',
         observacao: observacao || null, armazemId: armazemId || (await armazemPadrao(tx)), itens: { create: itens },
       },
-      include: { itens: true },
+      include: { itens: true, solicitante: { select: { nome: true } } },
     }),
   );
 
-  enviarPush('🚨 Nova OS no Armazém!', `A Ordem ${novaOrdem.codigo} (${novaOrdem.prioridade}) foi solicitada.`);
+  // Alerta no app: pop-up com som em todos os aparelhos, menos no de quem pediu.
+  const tituloPush = novaOrdem.tipo === 'ENTRADA' ? 'Nova ordem de entrada' : novaOrdem.tipo === 'DEVOLUCAO' ? 'Nova ordem de devolução' : 'Nova ordem de separação';
+  const qtdItens = novaOrdem.itens.length;
+  enviarPush(
+    `${novaOrdem.prioridade === 'Urgente' ? '🚨 URGENTE · ' : ''}${tituloPush}`,
+    `${novaOrdem.codigo} · ${qtdItens} ${qtdItens === 1 ? 'item' : 'itens'} · prioridade ${novaOrdem.prioridade.toLowerCase()} · pedida por ${novaOrdem.solicitante?.nome ?? 'alguém'}`,
+    { data: { tipo: 'nova-os', ordemId: novaOrdem.id, codigo: novaOrdem.codigo, prioridade: novaOrdem.prioridade }, excluirUsuarioId: solicitanteId, canal: CANAL_ORDENS },
+  );
   return res.status(201).json(novaOrdem);
 });
 

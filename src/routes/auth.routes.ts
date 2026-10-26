@@ -73,7 +73,10 @@ router.delete('/usuarios/:id', somenteAdmin, async (req, res) => {
 });
 
 router.put('/usuarios/:id/push-token', async (req, res) => {
-  await prisma.usuario.update({ where: { id: req.params.id }, data: { pushToken: req.body?.token ?? null } });
+  const token = req.body?.token ? String(req.body.token) : null;
+  // Um aparelho = um usuário: se outro login usou este celular antes, ele para de receber os alertas aqui.
+  if (token) await prisma.usuario.updateMany({ where: { pushToken: token, id: { not: String(req.params.id) } }, data: { pushToken: null } });
+  await prisma.usuario.update({ where: { id: String(req.params.id) }, data: { pushToken: token } });
   return res.send();
 });
 
