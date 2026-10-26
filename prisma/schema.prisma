@@ -473,3 +473,164 @@ model PlanoProducao {
 
   @@unique([produtoId, semana])
 }
+
+// ============================================================
+// ✨ FASE 6: TRANSFORMAÇÃO (estoque segregado, NÃO afeta o estoque oficial)
+// Razão imutável com hash encadeado; correções só por estorno ou ajuste com motivo.
+// ============================================================
+model TfMaterial {
+  id              String         @id @default(uuid())
+  codigo          String         @unique
+  nome            String
+  tipo            String         @default("MATERIA_PRIMA") // MATERIA_PRIMA | INTERMEDIARIO | PRODUTO | SUBPRODUTO
+  unidade         String         @default("UN")
+  custoUnitario   Float?
+  estoqueMinimo   Float?
+  controlaValidade Boolean       @default(false)
+  proprietario    String         @default("Próprio")       // Próprio | Terceiro
+  terceiroNome    String?
+  terceiroDoc     String?
+  ativo           Boolean        @default(true)
+  observacao      String?
+  legadoId        String?        @unique                   // item do módulo antigo que originou este material
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  lotes           TfLote[]
+  movimentos      TfMovimento[]
+  receitasProduto TfReceita[]
+  itensReceita    TfReceitaItem[]
+  itensOrdem      TfOrdemItem[]
+  ordensProduto   TfOrdem[]
+}
+
+model TfLote {
+  id         String        @id @default(uuid())
+  materialId String
+  material   TfMaterial    @relation(fields: [materialId], references: [id])
+  codigo     String
+  validade   DateTime?
+  status     String        @default("Liberado") // Liberado | Quarentena | Bloqueado
+  saldo      Float         @default(0)
+  origem     String        @default("Entrada")  // Entrada | Transformação | Migração | Subproduto
+  ordemId    String?
+  documento  String?
+  fornecedor String?
+  createdAt  DateTime      @default(now())
+  movimentos TfMovimento[]
+  itensOrdem TfOrdemItem[]
+
+  @@unique([materialId, codigo])
+}
+
+model TfMovimento {
+  id            String     @id @default(uuid())
+  seq           Int        @unique @default(autoincrement())
+  dataHora      DateTime   @default(now())
+  tipo          String     // ENTRADA | CONSUMO | PRODUCAO | SUBPRODUTO | PERDA | AJUSTE | SAIDA | ESTORNO
+  materialId    String
+  material      TfMaterial @relation(fields: [materialId], references: [id])
+  loteId        String?
+  lote          TfLote?    @relation(fields: [loteId], references: [id])
+  quantidade    Float      // positivo entra, negativo sai
+  saldoLoteApos Float?
+  documento     String?
+  ordemId       String?
+  usuario       String
+  usuarioId     String?
+  motivo        String?
+  hashAnterior  String?
+  hash          String
+
+  @@index([materialId, dataHora])
+  @@index([ordemId])
+}
+
+model TfReceita {
+  id                 String          @id @default(uuid())
+  codigo             String
+  versao             Int             @default(1)
+  nome               String
+  produtoId          String
+  produto            TfMaterial      @relation(fields: [produtoId], references: [id])
+  quantidadeBase     Float           @default(1)
+  toleranciaAviso    Float           @default(3)   // % de desvio de rendimento que exige justificativa
+  toleranciaBloqueio Float           @default(10)  // % de desvio que exige aprovação de outro usuário
+  ativa              Boolean         @default(true)
+  observacao         String?
+  criadoPor          String
+  createdAt          DateTime        @default(now())
+  itens              TfReceitaItem[]
+  ordens             TfOrdem[]
+
+  @@unique([codigo, versao])
+}
+
+model TfReceitaItem {
+  id         String     @id @default(uuid())
+  receitaId  String
+  receita    TfReceita  @relation(fields: [receitaId], references: [id], onDelete: Cascade)
+  materialId String
+  material   TfMaterial @relation(fields: [materialId], references: [id])
+  papel      String     @default("CONSUMO") // CONSUMO | SUBPRODUTO
+  quantidade Float
+}
+
+model TfOrdem {
+  id                  String        @id @default(uuid())
+  codigo              String        @unique
+  status              String        @default("Planejada") // Planejada | Aguardando aprovação | Concluída | Cancelada | Estornada
+  receitaId           String?
+  receita             TfReceita?    @relation(fields: [receitaId], references: [id])
+  produtoId           String
+  produto             TfMaterial    @relation(fields: [produtoId], references: [id])
+  quantidadePlanejada Float
+  quantidadeProduzida Float?
+  rendimento          Float?        // % produzido / esperado pelo que foi consumido
+  desvio              Float?        // rendimento - 100
+  faixa               String?       // OK | Justificar | Aprovar | Sem receita
+  justificativa       String?
+  loteCodigo          String?
+  validade            DateTime?
+  observacao          String?
+  criadoPor           String
+  executadoPor        String?
+  aprovadoPor         String?
+  aprovadoEm          DateTime?
+  createdAt           DateTime      @default(now())
+  executadaEm         DateTime?
+  concluidaEm         DateTime?
+  canceladaEm         DateTime?
+  estornadaEm         DateTime?
+  motivoCancelamento  String?
+  itens               TfOrdemItem[]
+}
+
+model TfOrdemItem {
+  id                  String     @id @default(uuid())
+  ordemId             String
+  ordem               TfOrdem    @relation(fields: [ordemId], references: [id], onDelete: Cascade)
+  papel               String     // CONSUMO | PRODUTO | SUBPRODUTO | PERDA
+  materialId          String?
+  material            TfMaterial? @relation(fields: [materialId], references: [id])
+  loteId              String?
+  lote                TfLote?    @relation(fields: [loteId], references: [id])
+  quantidadePadrao    Float?
+  quantidade          Float
+  motivo              String?
+}
+
+model TfEvento {
+  id           String   @id @default(uuid())
+  seq          Int      @unique @default(autoincrement())
+  dataHora     DateTime @default(now())
+  entidade     String   // Material | Lote | Receita | Ordem | Sistema
+  entidadeId   String?
+  acao         String
+  resumo       String
+  antes        Json?
+  depois       Json?
+  usuario      String
+  usuarioId    String?
+  hashAnterior String?
+  hash         String
+}

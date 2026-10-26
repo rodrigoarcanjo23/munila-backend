@@ -17,6 +17,7 @@ import financeiroRoutes from './routes/financeiro.routes';
 import empresaRoutes from './routes/empresa.routes';
 import biRoutes from './routes/bi.routes';
 import pcpRoutes from './routes/pcp.routes';
+import tfRoutes from './routes/tf.routes';
 
 export function criarApp() {
   const app = express();
@@ -41,6 +42,7 @@ export function criarApp() {
   app.use(financeiroRoutes);     // ✨ /financeiro/*
   app.use(empresaRoutes);        // ✨ /empresa, /fiscal/pendencias
   app.use(biRoutes);             // ✨ /bi/painel
+  app.use(tfRoutes);             // ✨ /tf/* (transformação: estoque segregado e auditável)
   app.use(pcpRoutes);            // ✨ /pcp/* (ordens de produção, plano mestre, MRP, recursos, fichas técnicas)
   app.use('/fornecedores', fornecedorRoutes);
   app.use('/transformacao', transformacaoRoutes);
