@@ -4,7 +4,7 @@ import { num } from '../lib/http';
 import {
   STATUS, TIPOS_CONSUMO, TIPOS_TRANSFERENCIA, consumoPorProduto, diasAtras, ehEntrada, estoqueMinimoDe, garantirEstoqueDisponivel, saldosDisponiveis,
 } from '../lib/estoque';
-import { painelExtra } from '../lib/painel';
+import { painelOperacao } from '../lib/painel';
 
 const router = Router();
 
@@ -143,18 +143,11 @@ router.get('/dashboard/painel', async (req, res) => {
   if (financeiro.receberVencido > 0) alertas.push({ nivel: 'atencao', titulo: `Recebimentos em atraso: ${financeiro.receberVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
   if (inventariosAbertos) alertas.push({ nivel: 'info', titulo: `${inventariosAbertos} inventário(s) em andamento`, rota: '/inventario' });
 
-  const hojeBR = diaBR(new Date());
-  const extra = await painelExtra({
-    dias, inicioPeriodo, produtos, estoques, movsPeriodo, saldoPorProduto, pedidos,
-    ordensConcluidasHoje: ordens.filter(o => o.concluidaEm && diaBR(o.concluidaEm) === hojeBR).length,
-  });
-  if (extra.riscoRupturaTotal) alertas.splice(1, 0, { nivel: 'critico', titulo: `${extra.riscoRupturaTotal} produto(s) acabam antes do próximo reabastecimento`, rota: '/compras/sugestao' });
-  const parado = extra.saude.faixas.find(f => f.chave === 'parado');
-  if (parado && parado.valor > 0) alertas.push({ nivel: 'atencao', titulo: `${parado.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })} parados há mais de 90 dias (${parado.produtos} produtos)`, rota: '/curva-abc' });
-  if (extra.modulos.pcp.atrasadas) alertas.push({ nivel: 'atencao', titulo: `${extra.modulos.pcp.atrasadas} ordem(ns) de produção atrasada(s)`, rota: '/pcp/ordens?filtro=atrasadas' });
-  if (extra.modulos.transformacao.aguardando) alertas.push({ nivel: 'atencao', titulo: `${extra.modulos.transformacao.aguardando} transformação(ões) aguardando aprovação`, rota: '/transformacao?aba=ordens' });
-  const semPreco = extra.qualidade.itens.find(q => q.chave === 'preco');
-  if (semPreco?.quantidade && valorCusto > 0 && kpis.capitalSemPreco / valorCusto > 0.2) alertas.push({ nivel: 'info', titulo: `${semPreco.quantidade} produto(s) sem preço de venda: a margem do painel fica incompleta`, rota: '/produtos' });
+  const extra = await painelOperacao({ movsPeriodo, custoDe: id => prodMap.get(id)?.precoCusto || 0 });
+  if (extra.producao.atrasadas) alertas.push({ nivel: 'atencao', titulo: `${extra.producao.atrasadas} ordem(ns) de produção atrasada(s)`, rota: '/pcp/ordens?filtro=atrasadas' });
+  if (extra.filas.transformacao.aguardando) alertas.push({ nivel: 'atencao', titulo: `${extra.filas.transformacao.aguardando} transformação(ões) aguardando aprovação`, rota: '/transformacao?aba=ordens' });
+  if (extra.recebimentos.hoje) alertas.push({ nivel: 'info', titulo: `${extra.recebimentos.hoje} recebimento(s) previsto(s) para hoje`, rota: '/compras' });
+  if (extra.fora.avaria.unidades) alertas.push({ nivel: 'info', titulo: `${extra.fora.avaria.unidades} un em avaria aguardando destino`, rota: '/rupturas' });
   const peso = { critico: 0, atencao: 1, info: 2 };
   alertas.sort((a, b) => peso[a.nivel] - peso[b.nivel]);
 

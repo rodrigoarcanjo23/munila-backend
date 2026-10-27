@@ -1,3 +1,4 @@
+import { pendenciasCadastro } from '../lib/painel';
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { badRequest, notFound, num, intOuNull, dataOuNull } from '../lib/http';
@@ -62,6 +63,9 @@ router.get('/produtos', async (_req, res) => {
 });
 
 /** Busca por leitura de código de barras ou SKU (leitor/coletor). */
+/** ✨ Pendências de cadastro (ids por tipo), usadas pelo card do Painel e pelo filtro da tela de Produtos. */
+router.get('/produtos/pendencias', async (_req, res) => res.json(await pendenciasCadastro()));
+
 router.get('/produtos/busca', async (req, res) => {
   const codigo = String(req.query.codigo || '').trim();
   if (!codigo) throw badRequest('Informe o código.');
