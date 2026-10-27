@@ -4,6 +4,7 @@ import { num } from '../lib/http';
 import {
   STATUS, TIPOS_CONSUMO, TIPOS_TRANSFERENCIA, consumoPorProduto, diasAtras, ehEntrada, estoqueMinimoDe, garantirEstoqueDisponivel, saldosDisponiveis,
 } from '../lib/estoque';
+import { painelExtra } from '../lib/painel';
 
 const router = Router();
 
@@ -33,8 +34,8 @@ router.get('/dashboard/painel', async (req, res) => {
   const [produtos, estoques, movsPeriodo, pedidos, ordens, inventariosAbertos, perdasMes] = await Promise.all([
     prisma.produto.findMany({ include: { categoria: true } }),
     prisma.estoque.findMany(),
-    prisma.movimentacao.findMany({ where: { dataHora: { gte: inicioPeriodo } }, select: { produtoId: true, quantidade: true, tipoAcao: true, dataHora: true } }),
-    prisma.pedidoCompra.findMany({ where: { status: 'Pendente' }, select: { custoTotal: true, dataPrevisao: true } }),
+    prisma.movimentacao.findMany({ where: { dataHora: { gte: inicioPeriodo } }, select: { produtoId: true, quantidade: true, tipoAcao: true, dataHora: true, usuarioId: true } }),
+    prisma.pedidoCompra.findMany({ where: { status: 'Pendente' }, select: { custoTotal: true, dataPrevisao: true, produtoId: true, quantidade: true } }),
     prisma.ordemTransferencia.findMany({ select: { status: true, prioridade: true, iniciadaEm: true, concluidaEm: true, createdAt: true } }),
     prisma.inventario.count({ where: { status: { in: ['Aberto', 'Em contagem'] } } }),
     prisma.movimentacao.findMany({ where: { tipoAcao: 'Perdas/Avarias', dataHora: { gte: inicioMes } }, include: { produto: { select: { precoCusto: true } } } }),
@@ -42,6 +43,7 @@ router.get('/dashboard/painel', async (req, res) => {
   const prodMap = new Map(produtos.map(p => [p.id, p]));
 
   // ---- Estoque
+  let custoPrecificado = 0, vendaPrecificada = 0;
   let unidades = 0, valorCusto = 0, valorVenda = 0, criticos = 0, zerados = 0, rupturaQtd = 0, rupturaValor = 0, demonstracao = 0;
   const saldoPorProduto = new Map<string, number>();
   for (const e of estoques) {
@@ -53,6 +55,7 @@ router.get('/dashboard/painel', async (req, res) => {
     unidades += e.status === STATUS.DISPONIVEL ? e.quantidade : 0;
     valorCusto += e.quantidade * (p.precoCusto || 0);
     valorVenda += e.quantidade * (p.precoVenda || 0);
+    if ((p.precoVenda || 0) > 0) { custoPrecificado += e.quantidade * (p.precoCusto || 0); vendaPrecificada += e.quantidade * (p.precoVenda || 0); }
   }
   for (const p of produtos) {
     const saldo = saldoPorProduto.get(p.id) || 0;
@@ -69,23 +72,24 @@ router.get('/dashboard/painel', async (req, res) => {
   }
 
   // ---- Série diária de entradas/saídas
-  const serie: Record<string, { data: string; entradas: number; saidas: number }> = {};
+  const serie: Record<string, { data: string; entradas: number; saidas: number; valorEntradas: number; valorSaidas: number }> = {};
   for (let i = 0; i < dias; i++) {
     const d = new Date(inicioPeriodo); d.setDate(d.getDate() + i); d.setHours(12);
     const k = diaBR(d);
-    serie[k] = { data: k, entradas: 0, saidas: 0 };
+    serie[k] = { data: k, entradas: 0, saidas: 0, valorEntradas: 0, valorSaidas: 0 };
   }
   const consumo = new Map<string, number>();
   for (const m of movsPeriodo) {
     const k = diaBR(new Date(m.dataHora));
     if (!serie[k]) continue;
     if (TIPOS_TRANSFERENCIA.includes(m.tipoAcao)) continue; // transferência entre armazéns não é entrada nem saída da empresa
-    if (ehEntrada(m.tipoAcao)) serie[k].entradas += m.quantidade; else serie[k].saidas += m.quantidade;
+    const vm = m.quantidade * (prodMap.get(m.produtoId)?.precoCusto || 0);
+    if (ehEntrada(m.tipoAcao)) { serie[k].entradas += m.quantidade; serie[k].valorEntradas += vm; } else { serie[k].saidas += m.quantidade; serie[k].valorSaidas += vm; }
     if (TIPOS_CONSUMO.includes(m.tipoAcao)) consumo.set(m.produtoId, (consumo.get(m.produtoId) || 0) + m.quantidade);
   }
   const topSaidas = [...consumo.entries()]
     .sort((a, b) => b[1] - a[1]).slice(0, 8)
-    .map(([id, qtd]) => ({ produtoId: id, nome: prodMap.get(id)?.nome || '-', sku: prodMap.get(id)?.sku || '-', quantidade: qtd }));
+    .map(([id, qtd]) => ({ produtoId: id, nome: prodMap.get(id)?.nome || '-', sku: prodMap.get(id)?.sku || '-', quantidade: qtd, valor: qtd * (prodMap.get(id)?.precoCusto || 0), saldo: saldoPorProduto.get(id) || 0, coberturaDias: qtd > 0 ? Math.floor((saldoPorProduto.get(id) || 0) / (qtd / dias)) : null }));
 
   // ---- Validade (por lote; usa a validade do cadastro quando o lote não tem)
   let vencidos = 0, vencendo30 = 0;
@@ -117,6 +121,7 @@ router.get('/dashboard/painel', async (req, res) => {
 
   const kpis = {
     totalProdutos: produtos.length, unidades, valorCusto, valorVenda, margemPotencial: valorVenda - valorCusto,
+    custoPrecificado, vendaPrecificada, margemPrecificada: vendaPrecificada - custoPrecificado, capitalSemPreco: valorCusto - custoPrecificado,
     criticos, zerados, rupturaQtd, rupturaValor, demonstracao,
     perdasMes: perdasMes.reduce((a, m) => a + m.quantidade * (m.produto?.precoCusto || 0), 0),
     caixaComprometido, pedidosPendentes: pedidos.length, pedidosAtrasados,
@@ -138,7 +143,23 @@ router.get('/dashboard/painel', async (req, res) => {
   if (financeiro.receberVencido > 0) alertas.push({ nivel: 'atencao', titulo: `Recebimentos em atraso: ${financeiro.receberVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
   if (inventariosAbertos) alertas.push({ nivel: 'info', titulo: `${inventariosAbertos} inventário(s) em andamento`, rota: '/inventario' });
 
+  const hojeBR = diaBR(new Date());
+  const extra = await painelExtra({
+    dias, inicioPeriodo, produtos, estoques, movsPeriodo, saldoPorProduto, pedidos,
+    ordensConcluidasHoje: ordens.filter(o => o.concluidaEm && diaBR(o.concluidaEm) === hojeBR).length,
+  });
+  if (extra.riscoRupturaTotal) alertas.splice(1, 0, { nivel: 'critico', titulo: `${extra.riscoRupturaTotal} produto(s) acabam antes do próximo reabastecimento`, rota: '/compras/sugestao' });
+  const parado = extra.saude.faixas.find(f => f.chave === 'parado');
+  if (parado && parado.valor > 0) alertas.push({ nivel: 'atencao', titulo: `${parado.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })} parados há mais de 90 dias (${parado.produtos} produtos)`, rota: '/curva-abc' });
+  if (extra.modulos.pcp.atrasadas) alertas.push({ nivel: 'atencao', titulo: `${extra.modulos.pcp.atrasadas} ordem(ns) de produção atrasada(s)`, rota: '/pcp/ordens?filtro=atrasadas' });
+  if (extra.modulos.transformacao.aguardando) alertas.push({ nivel: 'atencao', titulo: `${extra.modulos.transformacao.aguardando} transformação(ões) aguardando aprovação`, rota: '/transformacao?aba=ordens' });
+  const semPreco = extra.qualidade.itens.find(q => q.chave === 'preco');
+  if (semPreco?.quantidade && valorCusto > 0 && kpis.capitalSemPreco / valorCusto > 0.2) alertas.push({ nivel: 'info', titulo: `${semPreco.quantidade} produto(s) sem preço de venda: a margem do painel fica incompleta`, rota: '/produtos' });
+  const peso = { critico: 0, atencao: 1, info: 2 };
+  alertas.sort((a, b) => peso[a.nivel] - peso[b.nivel]);
+
   return res.json({
+    ...extra,
     dias, kpis, alertas, topSaidas,
     serie: Object.values(serie),
     valorPorCategoria: [...porCategoria.entries()].map(([categoria, valor]) => ({ categoria, valor })).filter(c => c.valor > 0).sort((a, b) => b.valor - a.valor),
