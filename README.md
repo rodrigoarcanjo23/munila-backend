@@ -28,7 +28,7 @@ O ViaPro ERP atende a operação de um distribuidor e montador de produtos: rece
 | Web (React) | [`munila-frontend`](https://github.com/rodrigoarcanjo23/munila-frontend) | Gestão completa, BI, PCP e financeiro |
 | App (Expo / React Native) | `controle-estoque-mobile` | Coletor do armazém: separação, movimentações, apontamento de produção e alerta de nova ordem |
 
-**Em números:** 16 módulos de rota · ~140 endpoints · 34 modelos no banco · 0 regra de estoque no cliente.
+**Em números:** 17 módulos de rota · ~155 endpoints · 35 modelos no banco · 0 regra de estoque no cliente.
 
 ## Arquitetura
 
@@ -79,6 +79,7 @@ As rotas só traduzem HTTP para chamadas de domínio. Cálculo de saldo, FEFO, r
 |---|---|---|
 | **Estoque e Kardex** | Saldo por produto, lote, armazém e endereço | Saldo derivado de movimentos tipados; Kardex com saldo após cada lançamento; documento RE/RS em cada movimento |
 | **WMS / Separação** | Ordens de separação com prioridade e checklist | Picking FEFO, progresso salvo por item, push para o app quando uma ordem nasce |
+| **Mapa, slotting e ondas** | Endereçamento por rua/módulo/nível, reposicionamento por giro e separação em lote | Rota em serpentina (S-shape), ABC por coletas com zona dourada, troca sugerida por ganho líquido em metros, afinidade entre produtos (Jaccard), ondas com caixa por pedido |
 | **Inventário** | Contagem geral ou cíclica | Contagem cega, contagem por lote, ajustes automáticos com rastreabilidade |
 | **Compras** | Pedido, recebimento e sugestão de compra | Ponto de pedido com lead time e estoque de segurança, conferência cega, divergência NF × recebido, e-mail ao fornecedor |
 | **Entrada por NF-e** | Importar XML da nota | Vínculo por EAN/SKU, fator de conversão (CX→UN), atualização de custo |
@@ -190,6 +191,7 @@ Todas as rotas respondem JSON. Erros seguem `{ "error": "mensagem legível" }` c
 | `/estoque` · `/movimentacoes` | Saldo por lote/armazém, operações (entrada, saída, devolução, demonstração, perda), auditoria |
 | `/armazens` | Armazéns e transferências |
 | `/wms/ordens` | Ordens de separação, iniciar, marcar item, concluir, `novas` (polling do app) |
+| `/wms/layout` · `/wms/slotting` · `/wms/ondas` | Mapa do armazém, gerador de endereços, sugestões de remanejamento, ondas com rota |
 | `/inventarios` | Abertura, contagem (cega e por lote), conclusão com ajustes |
 | `/pedidos-compra` · `/compras/sugestao` · `/recebimentos/nfe` | Compras, sugestão por necessidade, entrada por XML |
 | `/financeiro/*` | Títulos, baixas, contas bancárias, fluxo de caixa |
@@ -203,7 +205,7 @@ Todas as rotas respondem JSON. Erros seguem `{ "error": "mensagem legível" }` c
 ## Roadmap
 
 - [ ] Emissão de NF-e por provedor homologado (cadastro fiscal já preparado)
-- [ ] Endereçamento WMS por posição com sugestão de armazenagem
+- [ ] Sugestão de endereço no recebimento (putaway dirigido) usando o mapa
 - [ ] Pedido de venda com reserva de estoque
 - [ ] Testes automatizados das regras de `lib/` e pipeline de CI
 - [ ] Multiempresa (vários CNPJs)

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../lib/prisma';
+import { prisma, type Db } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
 import { armazemPadrao, entradaEstoque, gerarCodigoOS, registrarMovimentos, saidaFEFO, sugerirFEFO } from '../lib/estoque';
@@ -132,33 +132,36 @@ router.post('/wms/ordens/:id/concluir', async (req, res) => {
   const usuarioId = usuarioDaRequisicao(req);
   if (!usuarioId) throw badRequest('Usuário não identificado.');
 
-  const resultado = await prisma.$transaction(async tx => {
-    const ordem = await tx.ordemTransferencia.findUnique({ where: { id: req.params.id }, include: { itens: { include: { produto: true } } } });
-    if (!ordem) throw new Error('Ordem não encontrada.');
-    if (ordem.status === 'Concluída') throw new Error('Ordem já concluída.');
-    const entrada = ordem.tipo === 'ENTRADA' || ordem.tipo === 'DEVOLUCAO';
-
-    for (const item of ordem.itens) {
-      const rotulo = `[${item.produto.sku}] ${item.produto.nome}`;
-      if (entrada) {
-        const tipoAcao = ordem.tipo === 'ENTRADA' ? 'Entrada de mercadoria' : 'Devolução VIAPRO';
-        const observacao = `OS ${ordem.tipo === 'ENTRADA' ? 'Entrada' : 'Devolução'} #${ordem.codigo}`;
-        const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId });
-        await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao, codigo: ordem.codigo, observacao }, [parte]);
-      } else {
-        // ✨ FASE 2: saída FEFO — consome primeiro os lotes que vencem antes
-        const partes = await saidaFEFO(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId, rotulo });
-        await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao: 'Saída de mercadoria', codigo: ordem.codigo, observacao: `OS Retirada #${ordem.codigo}` }, partes);
-      }
-    }
-
-    await tx.itemOrdemTransferencia.updateMany({ where: { ordemId: ordem.id }, data: { marcado: true } });
-    return tx.ordemTransferencia.update({
-      where: { id: ordem.id },
-      data: { status: 'Concluída', separadorId: usuarioId, concluidaEm: new Date(), iniciadaEm: ordem.iniciadaEm ?? new Date() },
-    });
-  });
+  const resultado = await prisma.$transaction(tx => concluirOrdem(tx, String(req.params.id), usuarioId));
   return res.json(resultado);
 });
 
 export default router;
+
+/** Conclui uma ordem dentro de uma transação: movimenta o estoque (FEFO na saída) e marca os itens. Usada também pela onda. */
+export async function concluirOrdem(tx: Db, ordemId: string, usuarioId: string) {
+  const ordem = await tx.ordemTransferencia.findUnique({ where: { id: ordemId }, include: { itens: { include: { produto: true } } } });
+  if (!ordem) throw new Error('Ordem não encontrada.');
+  if (ordem.status === 'Concluída') throw new Error(`Ordem ${ordem.codigo} já concluída.`);
+  const entrada = ordem.tipo === 'ENTRADA' || ordem.tipo === 'DEVOLUCAO';
+
+  for (const item of ordem.itens) {
+    const rotulo = `[${item.produto.sku}] ${item.produto.nome}`;
+    if (entrada) {
+      const tipoAcao = ordem.tipo === 'ENTRADA' ? 'Entrada de mercadoria' : 'Devolução VIAPRO';
+      const observacao = `OS ${ordem.tipo === 'ENTRADA' ? 'Entrada' : 'Devolução'} #${ordem.codigo}`;
+      const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId });
+      await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao, codigo: ordem.codigo, observacao }, [parte]);
+    } else {
+      // ✨ FASE 2: saída FEFO — consome primeiro os lotes que vencem antes
+      const partes = await saidaFEFO(tx, { produtoId: item.produtoId, quantidade: item.quantidade, armazemId: ordem.armazemId, rotulo });
+      await registrarMovimentos(tx, { produtoId: item.produtoId, usuarioId, tipoAcao: 'Saída de mercadoria', codigo: ordem.codigo, observacao: `OS Retirada #${ordem.codigo}` }, partes);
+    }
+  }
+
+  await tx.itemOrdemTransferencia.updateMany({ where: { ordemId: ordem.id }, data: { marcado: true } });
+  return tx.ordemTransferencia.update({
+    where: { id: ordem.id },
+    data: { status: 'Concluída', separadorId: usuarioId, concluidaEm: new Date(), iniciadaEm: ordem.iniciadaEm ?? new Date() },
+  });
+}

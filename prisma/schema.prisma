@@ -29,6 +29,13 @@ model Localizacao {
   armazemId  String?   // ✨ FASE 2
   armazem    Armazem?  @relation(fields: [armazemId], references: [id])
   estoques   Estoque[]
+
+  // ✨ FASE 7: posição física para mapa, slotting e rota de separação
+  rua        String?            // corredor (A, B, 01, 02...)
+  modulo     Int?               // posição ao longo da rua, a partir da frente (expedição)
+  nivel      Int?               // 1 = chão; 2 = altura da cintura (zona dourada); 4+ = precisa de escada
+  tipo       String?  @default("Picking") // Picking | Pulmão | Chão | Doca
+  ativo      Boolean  @default(true)
 }
 
 // ============================================================
@@ -235,6 +242,10 @@ model OrdemTransferencia {
   armazem       Armazem?  @relation(fields: [armazemId], references: [id])
   iniciadaEm    DateTime?
   concluidaEm   DateTime?
+
+  // ✨ FASE 7: onda de separação (várias ordens separadas numa única rota)
+  ondaId        String?
+  onda          OndaSeparacao? @relation(fields: [ondaId], references: [id])
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -633,4 +644,25 @@ model TfEvento {
   usuarioId    String?
   hashAnterior String?
   hash         String
+}
+
+// ============================================================
+// ✨ FASE 7: ONDAS DE SEPARAÇÃO (batch picking com rota)
+// ============================================================
+model OndaSeparacao {
+  id                   String               @id @default(uuid())
+  codigo               String               @unique
+  status               String               @default("Aberta") // Aberta | Em separação | Concluída | Cancelada
+  armazemId            String?
+  criadoPor            String
+  separadorId          String?
+  separadorNome        String?
+  distanciaOnda        Float?               // metros estimados da rota única
+  distanciaIndividual  Float?               // metros estimados separando ordem por ordem
+  iniciadaEm           DateTime?
+  concluidaEm          DateTime?
+  createdAt            DateTime             @default(now())
+  ordens               OrdemTransferencia[]
+
+  @@index([status])
 }

@@ -95,6 +95,12 @@ export async function gerarCodigoOP(db: Db) {
   return proximo(regs.map(r => r.codigo), 'OP', ano);
 }
 
+export async function gerarCodigoOnda(db: Db) {
+  const ano = anoAtual();
+  const regs = await db.ondaSeparacao.findMany({ where: { codigo: { startsWith: 'ON', endsWith: ano } }, select: { codigo: true } });
+  return proximo(regs.map(r => r.codigo), 'ON', ano);
+}
+
 export async function gerarCodigoInventario(db: Db) {
   const ano = anoAtual();
   const regs = await db.inventario.findMany({ where: { codigo: { startsWith: 'INV', endsWith: ano } }, select: { codigo: true } });

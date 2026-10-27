@@ -7,6 +7,7 @@ import cadastrosRoutes from './routes/cadastros.routes';
 import produtosRoutes from './routes/produtos.routes';
 import estoqueRoutes from './routes/estoque.routes';
 import comprasRoutes from './routes/compras.routes';
+import layoutRoutes from './routes/layout.routes';
 import wmsRoutes from './routes/wms.routes';
 import inventarioRoutes from './routes/inventario.routes';
 import gerencialRoutes from './routes/gerencial.routes';
@@ -35,6 +36,7 @@ export function criarApp() {
   app.use(produtosRoutes);      // /produtos, /produtos/busca, /produtos/:id/kardex
   app.use(estoqueRoutes);       // /estoque, /movimentacoes, /movimentacoes/operacao, /producao/executar, /logs-auditoria
   app.use(comprasRoutes);       // /pedidos-compra, /compras/sugestao, /recebimentos/nfe
+  app.use(layoutRoutes);        // ✨ /wms/layout, /wms/slotting, /wms/ondas
   app.use(wmsRoutes);           // /wms/ordens
   app.use(inventarioRoutes);    // /inventarios
   app.use(gerencialRoutes);     // /dashboard/resumo, /dashboard/painel, /gerencial/*
