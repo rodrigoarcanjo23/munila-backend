@@ -224,16 +224,17 @@ router.post('/wms/slotting/aplicar', async (req, res) => {
 });
 
 // ================================================================== ondas
-type OrdemOnda = { id: string; codigo: string; prioridade: string; createdAt: Date; armazemId: string | null; itens: { id: string; produtoId: string; quantidade: number; marcado: boolean; produto: { id: string; nome: string; sku: string } }[] };
+export type OrdemOnda = { id: string; codigo: string; prioridade: string; createdAt: Date; armazemId: string | null; itens: { id: string; produtoId: string; quantidade: number; marcado: boolean; produto: { id: string; nome: string; sku: string; codigoBarras?: string | null; enderecoLocalizacao?: string | null } }[] };
+export const SELECT_PRODUTO_COLETA = { id: true, nome: true, sku: true, codigoBarras: true, enderecoLocalizacao: true } as const;
 
 /** Monta as paradas da rota: uma por produto e lote (FEFO), no endereço do lote quando houver, senão no endereço do produto. */
 async function montarColeta(db: Db, ordens: OrdemOnda[], layout: Layout, giro: ProdutoGiro[], armazemId: string) {
   const posProduto = new Map(giro.map(g => [g.id, g.pos]));
   const linhasEstoque = new Map((await db.estoque.findMany({ where: { produtoId: { in: [...new Set(ordens.flatMap(o => o.itens.map(i => i.produtoId)))] } }, select: { id: true, localizacaoId: true } })).map(e => [e.id, e.localizacaoId]));
-  const porProduto = new Map<string, { produto: OrdemOnda['itens'][number]['produto']; total: number; marcado: boolean; destino: { ordemId: string; codigo: string; quantidade: number }[] }>();
+  const porProduto = new Map<string, { produto: OrdemOnda['itens'][number]['produto']; total: number; marcado: boolean; destino: { ordemId: string; codigo: string; quantidade: number; itemId: string }[] }>();
   for (const o of ordens) for (const i of o.itens) {
     const l = porProduto.get(i.produtoId) ?? { produto: i.produto, total: 0, marcado: true, destino: [] };
-    l.total += i.quantidade; l.marcado = l.marcado && i.marcado; l.destino.push({ ordemId: o.id, codigo: o.codigo, quantidade: i.quantidade });
+    l.total += i.quantidade; l.marcado = l.marcado && i.marcado; l.destino.push({ ordemId: o.id, codigo: o.codigo, quantidade: i.quantidade, itemId: i.id });
     porProduto.set(i.produtoId, l);
   }
   const paradas = [];
@@ -249,12 +250,28 @@ async function montarColeta(db: Db, ordens: OrdemOnda[], layout: Layout, giro: P
   return paradas;
 }
 
+/** Coleta pronta para o separador: paradas em ordem de rota, com endereço (do mapa ou o texto do cadastro), lote FEFO e caixa de cada ordem. Usada pela onda e pelo coletor. */
+export async function coletaRoteirizada(db: Db, ordens: OrdemOnda[], ctx: { layout: Layout; giro: ProdutoGiro[]; armazemId: string } | null, toteDe: (ordemId: string) => string | undefined, armazemParam?: string | null) {
+  const c = ctx ?? await contexto(db, armazemParam ?? ordens[0]?.armazemId);
+  const paradas = await montarColeta(db, ordens, c.layout, c.giro, c.armazemId);
+  const rota = rotaS(paradas, c.layout);
+  return {
+    rota,
+    coleta: rota.paradas.map((p, i) => ({
+      seq: i + 1, endereco: posResumo(p.pos), enderecoTexto: p.pos?.codigo ?? p.dados.produto.enderecoLocalizacao ?? null,
+      produto: p.dados.produto, lote: p.dados.lote, validade: p.dados.validade, quantidade: p.dados.quantidade,
+      totalProduto: p.dados.totalProduto, falta: p.dados.falta, marcado: p.dados.marcado,
+      destino: p.dados.destino.map(d => ({ ...d, tote: toteDe(d.ordemId) })),
+    })),
+  };
+}
+
 function distanciaIndividual(ordens: OrdemOnda[], layout: Layout, giro: ProdutoGiro[]) {
   const pos = new Map(giro.map(g => [g.id, g.pos]));
   return Math.round(ordens.reduce((a, o) => a + rotaS(o.itens.map(i => ({ pos: pos.get(i.produtoId) ?? null, dados: null })), layout).distancia, 0) * 10) / 10;
 }
 
-const INCLUDE_ONDA = { ordens: { include: { itens: { include: { produto: { select: { id: true, nome: true, sku: true } } } }, solicitante: { select: { nome: true } } }, orderBy: { createdAt: 'asc' as const } } };
+const INCLUDE_ONDA = { ordens: { include: { itens: { include: { produto: { select: SELECT_PRODUTO_COLETA } } }, solicitante: { select: { nome: true } } }, orderBy: { createdAt: 'asc' as const } } };
 
 router.get('/wms/ondas', async (_req, res) => {
   const ondas = await prisma.ondaSeparacao.findMany({ include: { ordens: { select: { id: true, codigo: true, status: true, itens: { select: { quantidade: true, marcado: true } } } } }, orderBy: { createdAt: 'desc' }, take: 60 });
@@ -331,18 +348,13 @@ router.get('/wms/ondas/:id', async (req, res) => {
   if (!onda) throw notFound('Onda não encontrada.');
   const { layout, giro, armazemId } = await contexto(prisma, onda.armazemId);
   const ordensAbertas = onda.ordens.filter(o => o.status !== 'Concluída');
-  const paradas = await montarColeta(prisma, (onda.status === 'Concluída' ? onda.ordens : ordensAbertas) as OrdemOnda[], layout, giro, armazemId);
-  const rota = rotaS(paradas, layout);
   // Cada ordem ganha uma letra de caixa/tote para a triagem durante a coleta.
   const tote = new Map(onda.ordens.map((o, i) => [o.id, String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '')]));
+  const { rota, coleta } = await coletaRoteirizada(prisma, (onda.status === 'Concluída' ? onda.ordens : ordensAbertas) as OrdemOnda[], { layout, giro, armazemId }, id => tote.get(id));
   return res.json({
     ...onda,
     ordens: onda.ordens.map(o => ({ id: o.id, codigo: o.codigo, status: o.status, prioridade: o.prioridade, solicitante: o.solicitante?.nome ?? '-', tote: tote.get(o.id), linhas: o.itens.length, unidades: o.itens.reduce((a, i) => a + i.quantidade, 0) })),
-    coleta: rota.paradas.map((p, i) => ({
-      seq: i + 1, endereco: posResumo(p.pos), produto: p.dados.produto, lote: p.dados.lote, validade: p.dados.validade, quantidade: p.dados.quantidade,
-      totalProduto: p.dados.totalProduto, falta: p.dados.falta, marcado: p.dados.marcado,
-      destino: p.dados.destino.map(d => ({ ...d, tote: tote.get(d.ordemId) })),
-    })),
+    coleta,
     rota: { pontos: rota.pontos, distancia: rota.distancia, semPosicao: rota.semPosicao },
     mapa: { ruas: layout.ruas, posicoes: layout.posicoes.map(p => ({ id: p.id, rua: p.rua, ruaIndice: p.ruaIndice, modulo: p.modulo, x: p.x, y: p.y })), larguraRua: LARGURA_RUA, passoModulo: PASSO_MODULO },
   });

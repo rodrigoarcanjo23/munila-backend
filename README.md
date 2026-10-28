@@ -26,7 +26,8 @@ O ViaPro ERP atende a operação de um distribuidor e montador de produtos: rece
 | Cliente | Repositório | Uso |
 |---|---|---|
 | Web (React) | [`munila-frontend`](https://github.com/rodrigoarcanjo23/munila-frontend) | Gestão completa, BI, PCP e financeiro |
-| App (Expo / React Native) | `controle-estoque-mobile` | Coletor do armazém: separação, movimentações, apontamento de produção e alerta de nova ordem |
+| App (Expo / React Native) | `controle-estoque-mobile` | App de gestão no celular: separação, movimentações, apontamento de produção e alerta de nova ordem |
+| Coletor Android (Kotlin) | `controle-estoque-coletor` | APK nativo para coletores e celulares: picking guiado por bipe, inventário cego e consulta |
 
 **Em números:** 17 módulos de rota · ~155 endpoints · 35 modelos no banco · 0 regra de estoque no cliente.
 
@@ -191,6 +192,7 @@ Todas as rotas respondem JSON. Erros seguem `{ "error": "mensagem legível" }` c
 | `/estoque` · `/movimentacoes` | Saldo por lote/armazém, operações (entrada, saída, devolução, demonstração, perda), auditoria |
 | `/armazens` | Armazéns e transferências |
 | `/wms/ordens` | Ordens de separação, iniciar, marcar item, concluir, `novas` (polling do app) |
+| `/coletor/*` | `resumo` do operador, `consulta?codigo=` (produto, lote ou endereço), `ordens/:id/coleta` roteirizada |
 | `/wms/layout` · `/wms/slotting` · `/wms/ondas` | Mapa do armazém, gerador de endereços, sugestões de remanejamento, ondas com rota |
 | `/inventarios` | Abertura, contagem (cega e por lote), conclusão com ajustes |
 | `/pedidos-compra` · `/compras/sugestao` · `/recebimentos/nfe` | Compras, sugestão por necessidade, entrada por XML |
