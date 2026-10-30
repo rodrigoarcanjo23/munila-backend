@@ -113,6 +113,21 @@ export async function planejarConsumo(db: Db, materialId: string, quantidade: nu
   return { material, partes, falta: Math.max(0, falta), disponivel };
 }
 
+// ------------------------------------------------------------ nota fiscal da transformação
+/** NF digitada ("NF 1234", "NF-e nº 1234", " 1234 ") → "1234". Zeros à esquerda ficam como vieram. */
+export function normalizarNF(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  const t = String(v).trim().replace(/^(n\.?\s*f\.?\s*(-?\s*e)?\.?)?\s*(n[º°o]\.?)?\s*[-:]?\s*/i, '').replace(/\s+/g, '').toUpperCase();
+  return t || null;
+}
+
+/** Toda transformação concluída pertence a uma NF própria: a mesma NF não pode estar em duas ordens (só ordem cancelada libera o número). */
+export async function conferirNF(db: Db, notaFiscal: string | null | undefined, ordemId?: string | null) {
+  if (!notaFiscal) throw new Error('Informe o número da NF desta transformação.');
+  const outra = await db.tfOrdem.findFirst({ where: { notaFiscal, status: { not: 'Cancelada' }, ...(ordemId ? { id: { not: ordemId } } : {}) }, select: { codigo: true } });
+  if (outra) throw new Error(`A NF ${notaFiscal} já pertence à ordem ${outra.codigo}. Cada transformação precisa de uma NF nova.`);
+}
+
 // ------------------------------------------------------------ códigos
 const ano = () => new Date().getFullYear().toString().slice(-2);
 function proximo(codigos: (string | null)[], prefixo: string, a: string) {

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma, type Db } from '../lib/prisma';
 import { badRequest, notFound, num, dataOuNull } from '../lib/http';
 import {
-  STATUS_LOTE, TIPOS_MATERIAL, codigoLote, codigoOT, evento, lotesDisponiveis, movimentar, planejarConsumo, quem, r3, travar, verificarIntegridade, type Quem,
+  STATUS_LOTE, TIPOS_MATERIAL, codigoLote, codigoOT, conferirNF, evento, normalizarNF, lotesDisponiveis, movimentar, planejarConsumo, quem, r3, travar, verificarIntegridade, type Quem,
 } from '../lib/tf';
 
 // ============================================================
@@ -358,7 +358,7 @@ interface Execucao {
   produzido: number;
   subprodutos: { materialId: string; quantidade: number }[];
   perdas: { materialId?: string | null; quantidade: number; motivo: string }[];
-  loteCodigo?: string | null; validade?: Date | null; justificativa?: string | null; observacao?: string | null;
+  loteCodigo?: string | null; validade?: Date | null; justificativa?: string | null; observacao?: string | null; notaFiscal?: string | null;
 }
 
 function lerExecucao(b: any): Execucao {
@@ -369,7 +369,7 @@ function lerExecucao(b: any): Execucao {
   if (perdas.some((p: any) => !p.motivo)) throw badRequest('Toda perda precisa de motivo.');
   const produzido = r3(num(b.produzido));
   if (produzido <= 0) throw badRequest('Informe a quantidade produzida.');
-  return { consumos, produzido, subprodutos, perdas, loteCodigo: texto(b.loteCodigo), validade: dataOuNull(b.validade), justificativa: texto(b.justificativa), observacao: texto(b.observacao) };
+  return { consumos, produzido, subprodutos, perdas, loteCodigo: texto(b.loteCodigo), validade: dataOuNull(b.validade), justificativa: texto(b.justificativa), observacao: texto(b.observacao), notaFiscal: normalizarNF(b.notaFiscal) };
 }
 
 /** Rendimento real × padrão e variação de consumo por material, com a faixa de tolerância. */
@@ -410,7 +410,7 @@ async function postar(tx: Db, ordemId: string, q: Quem) {
   const validade = ordem.validade ?? menorValidade; // por padrão herda a menor validade dos insumos
   const existente = await tx.tfLote.findUnique({ where: { materialId_codigo: { materialId: ordem.produtoId, codigo } } });
   if (existente) throw new Error(`Já existe o lote ${codigo} de ${ordem.produto.nome}. Use outro código.`);
-  const lote = await tx.tfLote.create({ data: { materialId: ordem.produtoId, codigo, validade, origem: 'Transformação', ordemId, documento: doc } });
+  const lote = await tx.tfLote.create({ data: { materialId: ordem.produtoId, codigo, validade, origem: 'Transformação', ordemId, documento: ordem.notaFiscal ? `NF ${ordem.notaFiscal}` : doc } });
   await movimentar(tx, { tipo: 'PRODUCAO', materialId: ordem.produtoId, loteId: lote.id, quantidade: ordem.quantidadeProduzida, documento: doc, ordemId }, q);
   await tx.tfOrdemItem.create({ data: { ordemId, papel: 'PRODUTO', materialId: ordem.produtoId, loteId: lote.id, quantidade: ordem.quantidadeProduzida } });
   for (const s of ordem.itens.filter(i => i.papel === 'SUBPRODUTO')) {
@@ -429,6 +429,8 @@ async function registrarExecucao(tx: Db, ordemId: string, e: Execucao, q: Quem) 
   if (!ordem) throw new Error('Ordem não encontrada.');
   if (ordem.requisicaoId) throw new Error(DA_REQUISICAO);
   if (ordem.status !== 'Planejada') throw new Error(`A ordem está ${ordem.status.toLowerCase()} e não pode ser executada.`);
+  const notaFiscal = e.notaFiscal ?? ordem.notaFiscal;
+  await conferirNF(tx, notaFiscal, ordem.id);
   // confere material antes de registrar (com aprovação pendente o estoque ainda não é mexido)
   const porMaterial = new Map<string, number>();
   for (const c of e.consumos) porMaterial.set(c.materialId, r3((porMaterial.get(c.materialId) || 0) + c.quantidade));
@@ -460,13 +462,13 @@ async function registrarExecucao(tx: Db, ordemId: string, e: Execucao, q: Quem) 
     where: { id: ordemId },
     data: {
       quantidadeProduzida: e.produzido, rendimento: av.rendimento, desvio: av.desvio, faixa: av.faixa, justificativa: e.justificativa,
-      loteCodigo: e.loteCodigo?.toUpperCase() ?? null, validade: e.validade, observacao: e.observacao ?? ordem.observacao,
+      loteCodigo: e.loteCodigo?.toUpperCase() ?? null, validade: e.validade, observacao: e.observacao ?? ordem.observacao, notaFiscal,
       executadoPor: q.nome, executadaEm: new Date(), status: precisaAprovar ? 'Aguardando aprovação' : 'Planejada',
     },
   });
   await evento(tx, {
     entidade: 'Ordem', entidadeId: ordemId, acao: 'Execução',
-    resumo: `Apontou ${ordem.codigo}: ${e.produzido} ${ordem.produto.unidade} de ${ordem.produto.nome}${av.rendimento !== null ? `, rendimento ${av.rendimento}%` : ''}${precisaAprovar ? ' — aguardando aprovação de outro usuário' : ''}.`,
+    resumo: `Apontou ${ordem.codigo} (NF ${notaFiscal}): ${e.produzido} ${ordem.produto.unidade} de ${ordem.produto.nome}${av.rendimento !== null ? `, rendimento ${av.rendimento}%` : ''}${precisaAprovar ? ' — aguardando aprovação de outro usuário' : ''}.`,
     depois: { consumos: e.consumos, produzido: e.produzido, subprodutos: e.subprodutos, perdas: e.perdas, rendimento: av.rendimento, faixa: av.faixa, justificativa: e.justificativa },
   }, q);
   if (!precisaAprovar) await postar(tx, ordemId, q);
@@ -497,6 +499,7 @@ router.post('/tf/ordens', async (req, res) => {
     const ordem = await tx.tfOrdem.create({
       data: {
         codigo: await codigoOT(tx), receitaId: receita?.id ?? null, produtoId, quantidadePlanejada: quantidade, observacao: texto(b.observacao), criadoPor: q.nome,
+        notaFiscal: normalizarNF(b.notaFiscal ?? b.execucao?.notaFiscal),
         itens: receita ? { create: receita.itens.filter(i => i.papel === 'CONSUMO').map(i => ({ papel: 'CONSUMO', materialId: i.materialId, quantidade: r3(i.quantidade * fator), quantidadePadrao: r3(i.quantidade * fator) })) } : undefined,
       },
     });

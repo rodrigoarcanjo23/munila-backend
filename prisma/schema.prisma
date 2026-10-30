@@ -615,6 +615,7 @@ model TfOrdem {
   estornadaEm         DateTime?
   motivoCancelamento  String?
   itens               TfOrdemItem[]
+  notaFiscal          String?       // ✨ FASE 9: NF da transformação (cada fórmula concluída tem a sua; não se repete)
   requisicaoId        String?       // ✨ FASE 9: ordem gerada por uma requisição (Registro de transformação)
   requisicao          TfRequisicao? @relation(fields: [requisicaoId], references: [id])
 }

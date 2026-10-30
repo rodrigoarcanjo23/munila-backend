@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma, type Db } from '../lib/prisma';
 import { badRequest, notFound, num, dataOuNull } from '../lib/http';
-import { codigoLote, codigoOT, codigoRQ, evento, movimentar, planejarConsumo, quem, r3, travar, type Quem } from '../lib/tf';
+import { codigoLote, codigoOT, codigoRQ, conferirNF, evento, movimentar, normalizarNF, planejarConsumo, quem, r3, travar, type Quem } from '../lib/tf';
 import { FICHAS_PADRAO, MATERIAIS_PADRAO, RECEITAS_PADRAO } from '../lib/tfFichasPadrao';
 
 // ============================================================
@@ -372,8 +372,15 @@ router.post('/tf/requisicoes/:id/lancamento', async (req, res) => {
       const desvio = r3(rendimento - 100);
       const aviso = o.receita?.toleranciaAviso ?? 3, bloqueio = o.receita?.toleranciaBloqueio ?? 10;
       const faixa = Math.abs(desvio) <= aviso ? 'OK' : Math.abs(desvio) <= bloqueio ? 'Justificar' : 'Aprovar';
-      return { o, produzido, rendimento, desvio, faixa, loteCodigo: texto(e?.loteCodigo)?.toUpperCase() ?? null, validade: dataOuNull(e?.validade) };
+      return { o, produzido, rendimento, desvio, faixa, loteCodigo: texto(e?.loteCodigo)?.toUpperCase() ?? null, validade: dataOuNull(e?.validade), notaFiscal: normalizarNF(e?.notaFiscal) };
     });
+    // cada fórmula (produto acabado) pertence a uma NF nova
+    const semNF = planos.filter(p => !p.notaFiscal);
+    if (semNF.length) throw new Error(`Informe a NF de ${semNF.map(p => p.o.produto.codigo).join(', ')}. Cada produto acabado pertence a uma NF própria.`);
+    const nfs = planos.map(p => p.notaFiscal!);
+    const repetida = nfs.find((nf, i) => nfs.indexOf(nf) !== i);
+    if (repetida) throw new Error(`A NF ${repetida} foi informada para mais de um produto. Cada fórmula precisa de uma NF nova.`);
+    for (const p of planos) await conferirNF(tx, p.notaFiscal, p.o.id);
     const fora = planos.filter(p => p.faixa !== 'OK');
     if (fora.length && !justificativa) throw new Error(`${fora.map(p => `${p.o.produto.codigo}: ${p.produzido} de ${p.o.quantidadePlanejada} calculados`).join('; ')}. Escreva a justificativa da diferença.`);
     if (fora.some(p => p.faixa === 'Aprovar') && !q.admin) throw new Error('A diferença passa da tolerância da receita: o lançamento precisa ser feito por um gestor ou administrador.');
@@ -403,7 +410,7 @@ router.post('/tf/requisicoes/:id/lancamento', async (req, res) => {
       if (p.produzido > 0) {
         codigoProd = p.loteCodigo || await codigoLote(tx, 'TF');
         if (await tx.tfLote.findUnique({ where: { materialId_codigo: { materialId: o.produtoId, codigo: codigoProd } } })) throw new Error(`Já existe o lote ${codigoProd} de ${o.produto.nome}. Use outro código.`);
-        const lote = await tx.tfLote.create({ data: { materialId: o.produtoId, codigo: codigoProd, validade, origem: 'Transformação', ordemId: o.id, documento: o.codigo } });
+        const lote = await tx.tfLote.create({ data: { materialId: o.produtoId, codigo: codigoProd, validade, origem: 'Transformação', ordemId: o.id, documento: `NF ${p.notaFiscal}` } });
         await movimentar(tx, { tipo: 'PRODUCAO', materialId: o.produtoId, loteId: lote.id, quantidade: p.produzido, documento: o.codigo, ordemId: o.id }, q);
         await tx.tfOrdemItem.create({ data: { ordemId: o.id, papel: 'PRODUTO', materialId: o.produtoId, loteId: lote.id, quantidade: p.produzido } });
       }
@@ -411,12 +418,12 @@ router.post('/tf/requisicoes/:id/lancamento', async (req, res) => {
         where: { id: o.id },
         data: {
           status: 'Concluída', quantidadeProduzida: p.produzido, rendimento: p.rendimento, desvio: p.desvio, faixa: p.faixa, justificativa: p.faixa === 'OK' ? null : justificativa,
-          loteCodigo: codigoProd, validade, executadoPor: q.nome, executadaEm: new Date(), concluidaEm: new Date(),
+          loteCodigo: codigoProd, validade, notaFiscal: p.notaFiscal, executadoPor: q.nome, executadaEm: new Date(), concluidaEm: new Date(),
           aprovadoPor: p.faixa === 'Aprovar' ? q.nome : null, aprovadoEm: p.faixa === 'Aprovar' ? new Date() : null,
         },
       });
-      await evento(tx, { entidade: 'Ordem', entidadeId: o.id, acao: 'Execução', resumo: `Lançou ${o.codigo} (requisição ${rq.codigo}): ${p.produzido} ${o.produto.unidade} de ${o.produto.nome}${codigoProd ? `, lote ${codigoProd}` : ''}, rendimento ${p.rendimento}%.` }, q);
-      resumo.push(`${p.produzido} ${o.produto.codigo}${codigoProd ? ` (lote ${codigoProd})` : ''}`);
+      await evento(tx, { entidade: 'Ordem', entidadeId: o.id, acao: 'Execução', resumo: `Lançou ${o.codigo} (requisição ${rq.codigo}): ${p.produzido} ${o.produto.unidade} de ${o.produto.nome}${codigoProd ? `, lote ${codigoProd}` : ''}, NF ${p.notaFiscal}, rendimento ${p.rendimento}%.` }, q);
+      resumo.push(`${p.produzido} ${o.produto.codigo}${codigoProd ? ` (lote ${codigoProd})` : ''} · NF ${p.notaFiscal}`);
     }
     // avaria: sai do estoque como perda, com o motivo informado na conversão
     for (const item of rq.itens.filter(i => i.avariada > 0)) {
