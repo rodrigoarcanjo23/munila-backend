@@ -210,3 +210,56 @@ export async function migrarTransformacaoAntiga() {
   }, { timeout: 60000 });
   return pendentes.length;
 }
+
+// ------------------------------------------------------------ atualização das fichas do registro (idempotente)
+/**
+ * Aplica os nomes oficiais dos produtos e unifica o 00946-DSP no 00946 em bancos que já tinham as fichas.
+ * Saldo do 00946-DSP passa para o 00946 por movimento (saída + entrada, mesmo código de lote), então o razão segue íntegro.
+ */
+export async function atualizarFichasRegistro() {
+  const { NOMES_OFICIAIS, UNIFICAR } = await import('./tfFichasPadrao');
+  const sistema: Quem = { id: null, nome: 'Atualização automática', admin: true };
+  const feito: string[] = [];
+  const renomear = await prisma.tfMaterial.findMany({ where: { codigo: { in: Object.keys(NOMES_OFICIAIS) } } });
+  const dsp = await prisma.tfMaterial.findUnique({ where: { codigo: UNIFICAR.de } });
+  const alvo = await prisma.tfMaterial.findUnique({ where: { codigo: UNIFICAR.para } });
+  const receitaDsp = await prisma.tfReceita.findFirst({ where: { codigo: UNIFICAR.receita, ativa: true } });
+  const saidaDsp = await prisma.tfFichaSaida.findFirst({ where: { receitaCodigo: UNIFICAR.receita } });
+  const pendentesDsp = dsp ? await prisma.tfOrdem.count({ where: { produtoId: dsp.id, status: { in: ['Planejada', 'Aguardando aprovação'] } } }) : 0;
+  const precisa = renomear.some(m => m.nome !== NOMES_OFICIAIS[m.codigo]) || (dsp?.ativo && alvo && !pendentesDsp) || receitaDsp || saidaDsp;
+  if (!precisa) return feito;
+  await prisma.$transaction(async tx => {
+    await travar(tx);
+    for (const m of renomear) {
+      const nome = NOMES_OFICIAIS[m.codigo];
+      if (m.nome === nome) continue;
+      await tx.tfMaterial.update({ where: { id: m.id }, data: { nome } });
+      await evento(tx, { entidade: 'Material', entidadeId: m.id, acao: 'Alteração', resumo: `Nome de [${m.codigo}] atualizado para o da lista oficial de produtos: ${nome}.`, antes: { nome: m.nome }, depois: { nome } }, sistema);
+      feito.push(`nome ${m.codigo}`);
+    }
+    if (saidaDsp) {
+      await tx.tfFichaSaida.deleteMany({ where: { receitaCodigo: UNIFICAR.receita } });
+      feito.push('ficha sem 00946-DSP');
+    }
+    if (receitaDsp) {
+      await tx.tfReceita.updateMany({ where: { codigo: UNIFICAR.receita, ativa: true }, data: { ativa: false } });
+      await evento(tx, { entidade: 'Receita', entidadeId: receitaDsp.id, acao: 'Arquivamento', resumo: `Arquivou a receita ${UNIFICAR.receita}: o 946 é um produto só (use ${UNIFICAR.para}).` }, sistema);
+      feito.push(`receita ${UNIFICAR.receita} arquivada`);
+    }
+    if (dsp?.ativo && alvo && !pendentesDsp) {
+      const lotes = await tx.tfLote.findMany({ where: { materialId: dsp.id, saldo: { gt: 0 } } });
+      for (const l of lotes) {
+        const qtd = r3(l.saldo);
+        let destino = await tx.tfLote.findUnique({ where: { materialId_codigo: { materialId: alvo.id, codigo: l.codigo } } });
+        if (!destino) destino = await tx.tfLote.create({ data: { materialId: alvo.id, codigo: l.codigo, validade: l.validade, status: l.status, origem: 'Entrada', documento: l.documento, fornecedor: l.fornecedor, ordemId: l.ordemId } });
+        const motivo = `Unificação do ${UNIFICAR.de} no ${UNIFICAR.para} (946 é um produto só)`;
+        await movimentar(tx, { tipo: 'SAIDA', materialId: dsp.id, loteId: l.id, quantidade: -qtd, documento: 'UNIFICAÇÃO 946', motivo }, sistema);
+        await movimentar(tx, { tipo: 'ENTRADA', materialId: alvo.id, loteId: destino.id, quantidade: qtd, documento: 'UNIFICAÇÃO 946', motivo }, sistema);
+      }
+      await tx.tfMaterial.update({ where: { id: dsp.id }, data: { ativo: false } });
+      await evento(tx, { entidade: 'Material', entidadeId: dsp.id, acao: 'Desativação', resumo: `Unificou [${UNIFICAR.de}] no [${UNIFICAR.para}]${lotes.length ? `: ${lotes.length} lote(s) com saldo passaram para o ${UNIFICAR.para}` : ''}.` }, sistema);
+      feito.push(`${UNIFICAR.de} unificado`);
+    }
+  }, { timeout: 60000, maxWait: 15000 });
+  return feito;
+}

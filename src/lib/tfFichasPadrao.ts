@@ -12,7 +12,9 @@
 //
 // Códigos: a planilha repete códigos entre o importado e o acabado (00833 nos dois lados;
 // 836/0836/00836). Para o sistema não confundir, todo importado ganhou o prefixo "IMP-"
-// e os acabados ficaram com 5 dígitos. Os dois "00946" viraram 00946 e 00946-DSP.
+// e os acabados ficaram com 5 dígitos.
+// Nomes dos acabados: lista oficial de produtos Munila (30/10/2026). O 946 é um produto só
+// (a planilha tinha duas linhas, com e sem display; o antigo 00946-DSP foi unificado no 00946).
 // ============================================================
 
 export interface MaterialPadrao { codigo: string; nome: string; tipo: 'MATERIA_PRIMA' | 'PRODUTO'; unidade: string }
@@ -35,17 +37,16 @@ export const MATERIAIS_PADRAO: MaterialPadrao[] = [
   mp('IMP-0836', 'Bag plástico AZUL para Puxa Saco - dispositivo (caixa com 500 und)', 'UN'),
   mp('IMP-0854', 'Bag plástico ROSA para Puxa Saco - dispenser (caixa com 500 und)', 'UN'),
   // acabados
-  pa('00834', 'Lenço Tá na Mão - cx com 08 DISPLAYS', 'DISPLAY'),
-  pa('00833', 'Lenço Tá na Mão - cx com 24 PACKS', 'PACK'),
-  pa('00946-DSP', 'Lenço Tá na Mão UNITÁRIO DISPLAY cx c/ 192 mini', 'PACOTE'),
-  pa('00946', 'Lenço Tá na Mão UNITÁRIO cx c/ 192 mini', 'PACOTE'),
+  pa('00834', 'LENÇO UMEDECIDO TÁ NA MÃO MINI DISPLAY C/24 MUNILA', 'DISPLAY'),
+  pa('00833', 'LENÇO UMEDECIDO TÁ NA MÃO PACK C/8 MUNILA', 'PACK'),
+  pa('00946', 'LENÇO UMEDECIDO TÁ NA MÃO UNITÁRIO MUNILA', 'PACOTE'),
   pa('00162', 'Passa Febre CARTUCHO com 2 compressas - caixa com 14 cartuchos', 'CARTUCHO'),
   pa('00309', 'Passa Febre DISPLAY com 20 compressas - caixa com 6 Displays', 'DISPLAY'),
   pa('00756', 'Passa Febre Individual BICHINHOS com 1 - caixa com 24 und', 'UN'),
-  pa('00836', 'Puxa Saco (3 REFIS AZUL) - caixa com 12 blisters', 'UN'),
-  pa('00854', 'Puxa Saco (3 REFIS ROSA) - caixa com 12 blisters', 'UN'),
-  pa('00835', 'Puxa Saco - DISPOSITIVO + 2 REFIS AZUL - caixa com 12', 'UN'),
-  pa('00853', 'Puxa Saco - DISPENSER + 2 REFIS ROSA - caixa com 12', 'UN'),
+  pa('00836', 'PUXA SACO C/3 REFIS AZ MUNILA', 'UN'),
+  pa('00854', 'PUXA SACO C/3 REFIS RS MUNILA', 'UN'),
+  pa('00835', 'PUXA SACO DISPOSITIVO + 2 REFIS AZ MUNILA', 'UN'),
+  pa('00853', 'PUXA SACO DISPENSER + 2 REFIS RS MUNILA', 'UN'),
 ];
 
 const BICHOS = ['IMP-756-1', 'IMP-756-2', 'IMP-756-3', 'IMP-756-4'];
@@ -54,7 +55,6 @@ const BICHOS = ['IMP-756-1', 'IMP-756-2', 'IMP-756-3', 'IMP-756-4'];
 export const RECEITAS_PADRAO: ReceitaPadrao[] = [
   { codigo: 'RC-00834', nome: 'Display Tá na Mão (Packs ÷ 3)', produto: '00834', base: 1, itens: [['IMP-00833', 3]] },
   { codigo: 'RC-00833', nome: 'Tá na Mão cx 24 packs (Packs ÷ 2)', produto: '00833', base: 1, itens: [['IMP-00833', 2]] },
-  { codigo: 'RC-00946-DSP', nome: 'Tá na Mão mini display ((Packs × 8) ÷ 2)', produto: '00946-DSP', base: 4, itens: [['IMP-00833', 1]] },
   { codigo: 'RC-00946', nome: 'Tá na Mão mini ((Packs × 8) ÷ 2)', produto: '00946', base: 4, itens: [['IMP-00833', 1]] },
   { codigo: 'RC-00162', nome: 'Passa Febre cartucho (Sachês ÷ 2)', produto: '00162', base: 1, itens: [['IMP-332', 2]] },
   { codigo: 'RC-00309-QUAD', nome: 'Passa Febre display quadrado (Sachês ÷ 20)', produto: '00309', base: 1, itens: [['IMP-332', 20]] },
@@ -67,7 +67,7 @@ export const RECEITAS_PADRAO: ReceitaPadrao[] = [
 ];
 
 export const FICHAS_PADRAO: FichaPadrao[] = [
-  { codigo: 'LENCO-TA-NA-MAO', nome: 'Lenço Tá na Mão', saidas: ['RC-00834', 'RC-00833', 'RC-00946-DSP', 'RC-00946'] },
+  { codigo: 'LENCO-TA-NA-MAO', nome: 'Lenço Tá na Mão', saidas: ['RC-00834', 'RC-00833', 'RC-00946'] },
   { codigo: 'PF-QUADRADO', nome: 'Passa Febre Quadrado', saidas: ['RC-00162', 'RC-00309-QUAD'] },
   { codigo: 'PF-BICHINHOS', nome: 'Passa Febre Individual Bichinhos', saidas: ['RC-00756'] },
   { codigo: 'PF-MIX', nome: 'Passa Febre Mix Bichinhos + Quadrado', saidas: ['RC-00309-MIX'] },
@@ -76,3 +76,10 @@ export const FICHAS_PADRAO: FichaPadrao[] = [
   { codigo: 'PS-DISP-AZUL', nome: 'Puxa Saco - dispositivo + 2 refis azul', saidas: ['RC-00835'] },
   { codigo: 'PS-DISP-ROSA', nome: 'Puxa Saco - dispenser + 2 refis rosa', saidas: ['RC-00853'] },
 ];
+
+/** Nomes oficiais (lista Munila) aplicados também a quem já tinha cadastrado as fichas. */
+export const NOMES_OFICIAIS: Record<string, string> = Object.fromEntries(
+  MATERIAIS_PADRAO.filter(m => ['00833', '00834', '00946', '00836', '00854', '00853', '00835'].includes(m.codigo)).map(m => [m.codigo, m.nome]),
+);
+/** Material e receita que deixaram de existir: o 00946-DSP virou o próprio 00946. */
+export const UNIFICAR = { de: '00946-DSP', para: '00946', receita: 'RC-00946-DSP' };
