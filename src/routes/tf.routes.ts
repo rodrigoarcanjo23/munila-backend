@@ -320,7 +320,10 @@ const INCLUDE_OT = {
   produto: { select: { id: true, codigo: true, nome: true, unidade: true } },
   receita: { select: { id: true, codigo: true, versao: true, nome: true, quantidadeBase: true, toleranciaAviso: true, toleranciaBloqueio: true } },
   itens: { include: { material: { select: { id: true, codigo: true, nome: true, unidade: true } }, lote: { select: { id: true, codigo: true } } } },
+  requisicao: { select: { id: true, codigo: true } },
 } as const;
+
+const DA_REQUISICAO = 'Esta ordem pertence a um registro de transformação. Use a aba Requisições.';
 
 router.get('/tf/ordens', async (req, res) => {
   const where: any = {};
@@ -424,6 +427,7 @@ async function postar(tx: Db, ordemId: string, q: Quem) {
 async function registrarExecucao(tx: Db, ordemId: string, e: Execucao, q: Quem) {
   const ordem = await tx.tfOrdem.findUnique({ where: { id: ordemId }, include: { receita: { include: { itens: true } }, produto: true } });
   if (!ordem) throw new Error('Ordem não encontrada.');
+  if (ordem.requisicaoId) throw new Error(DA_REQUISICAO);
   if (ordem.status !== 'Planejada') throw new Error(`A ordem está ${ordem.status.toLowerCase()} e não pode ser executada.`);
   // confere material antes de registrar (com aprovação pendente o estoque ainda não é mexido)
   const porMaterial = new Map<string, number>();
@@ -536,6 +540,7 @@ router.post('/tf/ordens/:id/cancelar', async (req, res) => {
     await travar(tx);
     const o = await tx.tfOrdem.findUnique({ where: { id: String(req.params.id) } });
     if (!o) throw new Error('Ordem não encontrada.');
+    if (o.requisicaoId) throw new Error(DA_REQUISICAO);
     if (!['Planejada', 'Aguardando aprovação'].includes(o.status)) throw new Error('Só ordens planejadas ou aguardando aprovação podem ser canceladas. Ordens concluídas são estornadas.');
     const acao = o.status === 'Aguardando aprovação' ? 'Reprovação' : 'Cancelamento';
     await evento(tx, { entidade: 'Ordem', entidadeId: o.id, acao, resumo: `${acao === 'Reprovação' ? 'Reprovou' : 'Cancelou'} ${o.codigo}. Motivo: ${motivo}` }, q);
@@ -553,6 +558,7 @@ router.post('/tf/ordens/:id/estornar', async (req, res) => {
     await travar(tx);
     const o = await tx.tfOrdem.findUnique({ where: { id: String(req.params.id) } });
     if (!o) throw new Error('Ordem não encontrada.');
+    if (o.requisicaoId) throw new Error(DA_REQUISICAO);
     if (o.status !== 'Concluída') throw new Error('Só ordens concluídas podem ser estornadas.');
     const movs = await tx.tfMovimento.findMany({ where: { ordemId: o.id }, orderBy: { seq: 'asc' }, include: { lote: true } });
     // o que foi gerado precisa estar intacto no estoque

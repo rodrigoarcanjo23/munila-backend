@@ -512,6 +512,7 @@ model TfMaterial {
   itensReceita    TfReceitaItem[]
   itensOrdem      TfOrdemItem[]
   ordensProduto   TfOrdem[]
+  itensRequisicao TfRequisicaoItem[]
 }
 
 model TfLote {
@@ -614,6 +615,8 @@ model TfOrdem {
   estornadaEm         DateTime?
   motivoCancelamento  String?
   itens               TfOrdemItem[]
+  requisicaoId        String?       // ✨ FASE 9: ordem gerada por uma requisição (Registro de transformação)
+  requisicao          TfRequisicao? @relation(fields: [requisicaoId], references: [id])
 }
 
 model TfOrdemItem {
@@ -665,4 +668,69 @@ model OndaSeparacao {
   ordens               OrdemTransferencia[]
 
   @@index([status])
+}
+
+// ============================================================
+// ✨ FASE 9: REGISTRO DE TRANSFORMAÇÃO (importado / inacabado → acabado)
+// Ficha = modelo do registro (ex.: "Lenço Tá na Mão") com as receitas de saída possíveis.
+// Requisição = um registro preenchido: 1) requisição e entrega, 2) conversão, 3) lançamento.
+// ============================================================
+model TfFicha {
+  id          String           @id @default(uuid())
+  codigo      String           @unique
+  nome        String
+  observacao  String?
+  ativa       Boolean          @default(true)
+  criadoPor   String
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  saidas      TfFichaSaida[]
+  requisicoes TfRequisicao[]
+}
+
+model TfFichaSaida {
+  id            String  @id @default(uuid())
+  fichaId       String
+  ficha         TfFicha @relation(fields: [fichaId], references: [id], onDelete: Cascade)
+  receitaCodigo String  // sempre usa a versão ativa da receita
+  ordem         Int     @default(0)
+}
+
+model TfRequisicao {
+  id                 String             @id @default(uuid())
+  codigo             String             @unique
+  fichaId            String
+  ficha              TfFicha            @relation(fields: [fichaId], references: [id])
+  status             String             @default("Solicitada") // Solicitada | Entregue | Convertida | Concluída | Cancelada | Estornada
+  numeroViapro       String?
+  solicitadoPor      String
+  solicitadoEm       DateTime           @default(now())
+  entreguePor        String?
+  entregueEm         DateTime?
+  registradoEntregaPor String?
+  responsavelConversao String?
+  convertidaEm       DateTime?
+  avariaMotivo       String?
+  lancadoPor         String?
+  lancadoEm          DateTime?
+  justificativa      String?
+  observacao         String?
+  canceladaEm        DateTime?
+  motivoCancelamento String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  itens              TfRequisicaoItem[]
+  ordens             TfOrdem[]
+}
+
+model TfRequisicaoItem {
+  id                 String       @id @default(uuid())
+  requisicaoId       String
+  requisicao         TfRequisicao @relation(fields: [requisicaoId], references: [id], onDelete: Cascade)
+  materialId         String
+  material           TfMaterial   @relation(fields: [materialId], references: [id])
+  quantidade         Float        // solicitada
+  quantidadeEntregue Float?
+  lotes              Json?        // [{ loteId, codigo, quantidade }] entregues pela logística
+  avariada           Float        @default(0)
 }

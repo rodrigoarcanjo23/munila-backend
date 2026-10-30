@@ -88,6 +88,7 @@ As rotas só traduzem HTTP para chamadas de domínio. Cálculo de saldo, FEFO, r
 | **Financeiro** | Contas a pagar e a receber, fluxo de caixa | Parcelamento, baixa e estorno, títulos gerados na entrada por NF-e, saldo por conta bancária |
 | **PCP** | Ordens de produção, plano mestre, MRP, recursos e fichas técnicas | Estrutura multinível com detecção de ciclo, MRP com data de necessidade × lead time, apontamento com refugo |
 | **Transformação** | Estoque segregado de conversão matéria-prima → produto | Ledger imutável com hash encadeado, receitas versionadas, tolerância com aprovação de segundo usuário, genealogia de lote |
+| **Registro de transformação** | Importado / inacabado → acabado, nas 3 etapas da ficha em papel (requisição e entrega, conversão, lançamento) | Fichas com várias saídas por entrada, cálculo derivado da receita, avaria como perda com motivo, consumo dos lotes entregues, ficha imprimível A4 |
 | **BI logístico** | Indicadores e recomendações | Previsão de Holt, matriz ABC × XYZ, OTIF de fornecedores, cobertura, risco de ruptura, rebalanceamento entre armazéns |
 | **Painel** | Central da operação | Filas, agenda de recebimentos, produção em andamento, equipe do dia e qualidade do cadastro |
 
@@ -199,6 +200,7 @@ Todas as rotas respondem JSON. Erros seguem `{ "error": "mensagem legível" }` c
 | `/financeiro/*` | Títulos, baixas, contas bancárias, fluxo de caixa |
 | `/pcp/*` | Recursos, ordens de produção, apontamentos, plano mestre, MRP, estruturas e custo |
 | `/tf/*` | Transformação: materiais, lotes, receitas, ordens, rastreio, auditoria, integridade |
+| `/tf/fichas` · `/tf/requisicoes` | Registro de transformação: fichas (e `POST /tf/fichas/padrao` com as 8 da planilha), requisição → entrega → conversão → lançamento, cancelamento e estorno |
 | `/dashboard/painel` | Central da operação |
 | `/bi/painel` | BI logístico (`dias`, `armazemId`, `categoriaId`) |
 | `/gerencial/*` | Curva ABC, validade |

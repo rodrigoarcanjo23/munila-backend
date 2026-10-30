@@ -129,6 +129,12 @@ export async function codigoOT(db: Db) {
   const r = await db.tfOrdem.findMany({ where: { codigo: { startsWith: 'OT', endsWith: a } }, select: { codigo: true } });
   return proximo(r.map(x => x.codigo), 'OT', a);
 }
+/** Requisição do registro de transformação (RQ000126), sequencial por ano. */
+export async function codigoRQ(db: Db) {
+  const a = ano();
+  const r = await db.tfRequisicao.findMany({ where: { codigo: { startsWith: 'RQ', endsWith: a } }, select: { codigo: true } });
+  return proximo(r.map(x => x.codigo), 'RQ', a);
+}
 /** Lote gerado pela transformação (TF000126) ou de entrada (EN000126), sequencial por ano. */
 export async function codigoLote(db: Db, prefixo: 'TF' | 'EN') {
   const a = ano();
