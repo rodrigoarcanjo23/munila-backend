@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma, type Db } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
-import { armazemPadrao, entradaEstoque, gerarCodigoOS, registrarMovimentos, saidaFEFO, sugerirFEFO } from '../lib/estoque';
+import { armazemPadrao, conferirSaldoDaOrdem, disponibilidadeParaOrdem, entradaEstoque, gerarCodigoOS, mensagemFaltas, registrarMovimentos, saidaFEFO, sugerirFEFO, type FaltaOrdem } from '../lib/estoque';
 import { CANAL_ORDENS, enviarPush } from '../lib/notificacoes';
 
 const router = Router();
@@ -40,21 +40,46 @@ router.get('/wms/ordens/novas', async (req, res) => {
   return res.json({ agora: new Date(), ordens, pendentes });
 });
 
+/** ✨ Saldo livre para pedir (saldo disponível − o que ordens de saída abertas já reservaram), por produto. */
+router.get('/wms/disponibilidade', async (req, res) => {
+  const armazemId = req.query.armazemId ? String(req.query.armazemId) : await armazemPadrao(prisma);
+  const disp = await disponibilidadeParaOrdem(prisma, armazemId, req.query.ignorarOrdemId ? String(req.query.ignorarOrdemId) : null);
+  return res.json({ armazemId, produtos: Object.fromEntries(disp) });
+});
+
+/** Lock da emissão de ordens de saída: duas pessoas pedindo o último item ao mesmo tempo não passam juntas. */
+const LOCK_ORDENS = 7340099;
+class SemSaldo extends Error { constructor(public faltas: FaltaOrdem[]) { super(mensagemFaltas(faltas)); } }
+const responderSemSaldo = (res: any, e: unknown) => {
+  if (e instanceof SemSaldo) { res.status(409).json({ error: e.message, faltas: e.faltas }); return true; }
+  return false;
+};
+
 router.post('/wms/ordens', async (req, res) => {
   const { tipo, prioridade, observacao, armazemId } = req.body || {};
   const solicitanteId = req.usuario?.id || req.body?.solicitanteId;
   if (!solicitanteId) throw badRequest('Solicitante não identificado.');
   const itens = itensValidos(req.body?.itens);
 
-  const novaOrdem = await prisma.$transaction(async tx =>
-    tx.ordemTransferencia.create({
-      data: {
-        codigo: await gerarCodigoOS(tx), solicitanteId, status: 'Pendente', tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal',
-        observacao: observacao || null, armazemId: armazemId || (await armazemPadrao(tx)), itens: { create: itens },
-      },
-      include: { itens: true, solicitante: { select: { nome: true } } },
-    }),
-  );
+  let novaOrdem;
+  try {
+    novaOrdem = await prisma.$transaction(async tx => {
+      const arm = armazemId || (await armazemPadrao(tx));
+      const tipoOrdem = tipo || 'SAIDA';
+      if (tipoOrdem === 'SAIDA') {
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${LOCK_ORDENS})`);
+        const faltas = await conferirSaldoDaOrdem(tx, itens, arm);
+        if (faltas.length) throw new SemSaldo(faltas);
+      }
+      return tx.ordemTransferencia.create({
+        data: {
+          codigo: await gerarCodigoOS(tx), solicitanteId, status: 'Pendente', tipo: tipoOrdem, prioridade: prioridade || 'Normal',
+          observacao: observacao || null, armazemId: arm, itens: { create: itens },
+        },
+        include: { itens: true, solicitante: { select: { nome: true } } },
+      });
+    });
+  } catch (e) { if (responderSemSaldo(res, e)) return; throw e; }
 
   // Alerta no app: pop-up com som em todos os aparelhos, menos no de quem pediu.
   const tituloPush = novaOrdem.tipo === 'ENTRADA' ? 'Nova ordem de entrada' : novaOrdem.tipo === 'DEVOLUCAO' ? 'Nova ordem de devolução' : 'Nova ordem de separação';
@@ -73,14 +98,24 @@ router.put('/wms/ordens/:id', async (req, res) => {
   const atual = await prisma.ordemTransferencia.findUnique({ where: { id: req.params.id } });
   if (!atual || atual.status !== 'Pendente') throw badRequest('Apenas ordens Pendentes podem ser editadas.');
 
-  const atualizada = await prisma.$transaction(async tx => {
-    await tx.itemOrdemTransferencia.deleteMany({ where: { ordemId: atual.id } });
-    return tx.ordemTransferencia.update({
-      where: { id: atual.id },
-      data: { tipo: tipo || 'SAIDA', prioridade: prioridade || 'Normal', observacao: observacao ?? atual.observacao, armazemId: armazemId || atual.armazemId, itens: { create: itens } },
-      include: { itens: true },
+  let atualizada;
+  try {
+    atualizada = await prisma.$transaction(async tx => {
+      const tipoOrdem = tipo || 'SAIDA';
+      const arm = armazemId || atual.armazemId || (await armazemPadrao(tx));
+      if (tipoOrdem === 'SAIDA') {
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${LOCK_ORDENS})`);
+        const faltas = await conferirSaldoDaOrdem(tx, itens, arm, atual.id); // a própria ordem não conta como reserva
+        if (faltas.length) throw new SemSaldo(faltas);
+      }
+      await tx.itemOrdemTransferencia.deleteMany({ where: { ordemId: atual.id } });
+      return tx.ordemTransferencia.update({
+        where: { id: atual.id },
+        data: { tipo: tipoOrdem, prioridade: prioridade || 'Normal', observacao: observacao ?? atual.observacao, armazemId: arm, itens: { create: itens } },
+        include: { itens: true },
+      });
     });
-  });
+  } catch (e) { if (responderSemSaldo(res, e)) return; throw e; }
   return res.json(atualizada);
 });
 

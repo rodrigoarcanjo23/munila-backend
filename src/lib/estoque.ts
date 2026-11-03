@@ -264,3 +264,56 @@ export function diasAtras(dias: number) {
   d.setDate(d.getDate() - dias);
   return d;
 }
+
+// ------------------------------------------------------------ ✨ disponibilidade para ordens de separação
+/** Status em que uma ordem de saída ainda vai consumir estoque (o saldo já está comprometido com ela). */
+export const STATUS_RESERVA = ['Pendente', 'Em Separação'];
+
+/** Quanto de cada produto já está pedido em ordens de saída abertas num armazém (reserva). */
+export async function reservadoEmOrdens(db: Db, armazemId: string, ignorarOrdemId?: string | null) {
+  const itens = await db.itemOrdemTransferencia.groupBy({
+    by: ['produtoId'],
+    where: { ordem: { tipo: 'SAIDA', status: { in: STATUS_RESERVA }, armazemId, ...(ignorarOrdemId ? { id: { not: ignorarOrdemId } } : {}) } },
+    _sum: { quantidade: true },
+  });
+  return new Map(itens.map(i => [i.produtoId, i._sum.quantidade || 0]));
+}
+
+/** Saldo, reserva e quanto ainda está livre para pedir, por produto, num armazém. */
+export async function disponibilidadeParaOrdem(db: Db, armazemId: string, ignorarOrdemId?: string | null) {
+  const [saldos, reservas] = await Promise.all([saldosDisponiveis(db, armazemId), reservadoEmOrdens(db, armazemId, ignorarOrdemId)]);
+  const ids = new Set([...saldos.keys(), ...reservas.keys()]);
+  const out = new Map<string, { saldo: number; reservado: number; livre: number }>();
+  for (const id of ids) {
+    const saldo = Math.max(0, saldos.get(id) || 0), reservado = reservas.get(id) || 0;
+    out.set(id, { saldo, reservado, livre: Math.max(0, saldo - reservado) });
+  }
+  return out;
+}
+
+export interface FaltaOrdem { produtoId: string; sku: string; nome: string; pedido: number; saldo: number; reservado: number; livre: number }
+
+/**
+ * Regra: não se emite ordem de saída de item sem saldo livre (saldo disponível no armazém menos o que outras
+ * ordens abertas já pediram). Devolve a lista do que falta; vazia = pode emitir.
+ */
+export async function conferirSaldoDaOrdem(db: Db, itens: { produtoId: string; quantidade: number }[], armazemId: string, ignorarOrdemId?: string | null) {
+  const pedido = new Map<string, number>();
+  for (const i of itens) pedido.set(i.produtoId, (pedido.get(i.produtoId) || 0) + i.quantidade);
+  const disp = await disponibilidadeParaOrdem(db, armazemId, ignorarOrdemId);
+  const faltas: FaltaOrdem[] = [];
+  const produtos = await db.produto.findMany({ where: { id: { in: [...pedido.keys()] } }, select: { id: true, sku: true, nome: true } });
+  for (const [produtoId, qtd] of pedido) {
+    const d = disp.get(produtoId) ?? { saldo: 0, reservado: 0, livre: 0 };
+    if (qtd > d.livre) {
+      const p = produtos.find(x => x.id === produtoId);
+      faltas.push({ produtoId, sku: p?.sku ?? '?', nome: p?.nome ?? 'Produto não encontrado', pedido: qtd, ...d });
+    }
+  }
+  return faltas;
+}
+
+export function mensagemFaltas(faltas: FaltaOrdem[]) {
+  const linhas = faltas.map(f => `[${f.sku}] ${f.nome}: pedido ${f.pedido}, disponível ${f.livre}` + (f.reservado > 0 ? ` (saldo ${f.saldo}, ${f.reservado} já reservado em outras ordens)` : ''));
+  return `Não é possível emitir a ordem: ${faltas.length === 1 ? 'item sem saldo suficiente' : `${faltas.length} itens sem saldo suficiente`}. ${linhas.join('; ')}.`;
+}
