@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { perfilDe, usuarioDaRequisicao } from '../lib/auth';
 import { dataOuNull } from '../lib/http';
+import { registrarSobra, sobraPendente } from '../lib/divergencias';
 import { STATUS, armazemPadrao, entradaEstoque, garantirEstoqueDisponivel, gerarCodigoInventario, gerarCodigoRequisicao, linhaEstoque, registrarMovimentos, saidaFEFO, saldosDisponiveis } from '../lib/estoque';
 
 /**
@@ -10,6 +11,9 @@ import { STATUS, armazemPadrao, entradaEstoque, garantirEstoqueDisponivel, gerar
  * 1. Abre o inventário e "congela" o saldo do sistema de cada item (snapshot).
  * 2. Operadores informam a quantidade contada (contagem cega: o saldo do sistema fica oculto).
  * 3. Ao concluir, as diferenças viram movimentações de ajuste (RE/RS) com rastreabilidade.
+ *    ✨ FASE 10: a sobra (contado acima do sistema) NÃO entra no disponível: vai para "Sobra sem NF" e abre
+ *    uma ocorrência (DV…) para ser regularizada por nova NF, devolução ou ajuste aprovado. Sobra já pendente
+ *    do mesmo produto conta como existente (não abre ocorrência repetida).
  */
 const router = Router();
 
@@ -114,11 +118,28 @@ router.post('/inventarios/:id/concluir', async (req, res) => {
     let codigoRE: string | null = null;
     let codigoRS: string | null = null;
     let ajustes = 0, unidadesMais = 0, unidadesMenos = 0;
+    const sobras: { codigo: string; sku: string; nome: string; quantidade: number }[] = [];
+    const avisos: string[] = [];
+    const quem = req.usuario?.nome ?? (await tx.usuario.findUnique({ where: { id: usuarioId }, select: { nome: true } }))?.nome ?? 'Desconhecido';
+    const abrirSobra = async (produtoId: string, quantidade: number, extra: { lote?: string | null; validade?: Date | null; documento: number; contada: number }) => {
+      const dv = await registrarSobra(tx, {
+        produtoId, quantidade, armazemId: inv.armazemId, lote: extra.lote, validade: extra.validade, origem: 'Inventário', documentoOrigem: inv.codigo, inventarioId: inv.id,
+        quantidadeDocumento: extra.documento, quantidadeContada: extra.contada, criadoPor: quem,
+        observacao: `Inventário ${inv.codigo}: contado ${extra.contada}, sistema ${extra.documento}${extra.lote ? ` (lote ${extra.lote})` : ''}.`,
+      });
+      if (dv) sobras.push({ codigo: dv.codigo, sku: dv.produto.sku, nome: dv.produto.nome, quantidade });
+    };
 
     for (const item of inv.itens) {
       const contada = item.quantidadeContada ?? (considerarNaoContadosComoZero ? 0 : null);
       if (contada === null) continue;
       const diferenca = contada - item.saldoSistema;
+      // sobra que já estava guardada (sem NF) também está fisicamente na prateleira
+      const sobraJa = await sobraPendente(tx, item.produtoId, inv.armazemId);
+      if (sobraJa > 0 && contada - item.saldoSistema < sobraJa) {
+        const p = await tx.produto.findUnique({ where: { id: item.produtoId }, select: { sku: true } });
+        avisos.push(`[${p?.sku}] tem ${sobraJa} un de sobra sem NF pendente, mas a contagem só confirmou ${Math.max(0, contada - item.saldoSistema)}. Confira e resolva em Divergências (recontagem).`);
+      }
       const lotes = Array.isArray(item.lotesContados) ? (item.lotesContados as { lote: string; validade?: string | null; quantidade: number }[]) : null;
       if (diferenca === 0 && !lotes?.length) continue;
       const base = { produtoId: item.produtoId, usuarioId, observacao: `Inventário ${inv.codigo}: sistema ${item.saldoSistema}, contado ${contada}.` };
@@ -132,16 +153,21 @@ router.post('/inventarios/:id/concluir', async (req, res) => {
           const linha = await linhaEstoque(tx, item.produtoId, STATUS.DISPONIVEL, { armazemId: inv.armazemId, lote: l.lote || null, validade: dataOuNull(l.validade) });
           const d = l.quantidade - linha.quantidade;
           if (d === 0) continue;
+          if (d > 0) {
+            // sobra no lote: o disponível fica como está; o que passar da sobra já pendente abre ocorrência
+            const nova = d - (await sobraPendente(tx, item.produtoId, linha.armazemId, linha.lote));
+            if (nova > 0) await abrirSobra(item.produtoId, nova, { lote: linha.lote, validade: linha.validade, documento: linha.quantidade, contada: l.quantidade });
+            continue;
+          }
           await tx.estoque.update({ where: { id: linha.id }, data: { quantidade: l.quantidade } });
           if (d > 0) { codigoRE ??= await gerarCodigoRequisicao(tx, 'RE'); unidadesMais += d; } else { codigoRS ??= await gerarCodigoRequisicao(tx, 'RS'); unidadesMenos += -d; }
           await registrarMovimentos(tx, { ...base, tipoAcao: d > 0 ? 'Ajuste de Entrada de Inventário' : 'Ajuste de Saída de Inventário', codigo: d > 0 ? codigoRE : codigoRS },
             [{ estoqueId: linha.id, lote: linha.lote, validade: linha.validade, quantidade: Math.abs(d), armazemId: linha.armazemId }]);
         }
       } else if (diferenca > 0) {
-        codigoRE ??= await gerarCodigoRequisicao(tx, 'RE');
-        const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: diferenca, armazemId: inv.armazemId });
-        await registrarMovimentos(tx, { ...base, tipoAcao: 'Ajuste de Entrada de Inventário', codigo: codigoRE }, [parte]);
-        unidadesMais += diferenca;
+        // ✨ FASE 10: sobra sem NF não entra no disponível
+        const nova = diferenca - sobraJa;
+        if (nova > 0) await abrirSobra(item.produtoId, nova, { documento: item.saldoSistema + sobraJa, contada });
       } else {
         codigoRS ??= await gerarCodigoRequisicao(tx, 'RS');
         const disponivel = (await saldosDisponiveis(tx, inv.armazemId)).get(item.produtoId) ?? 0;
@@ -154,8 +180,8 @@ router.post('/inventarios/:id/concluir', async (req, res) => {
       ajustes++;
     }
 
-    await tx.inventario.update({ where: { id: inv.id }, data: { status: 'Concluído', concluidoEm: new Date() } });
-    return { codigo: inv.codigo, ajustes, unidadesMais, unidadesMenos, codigoRE, codigoRS };
+    await tx.inventario.update({ where: { id: inv.id }, data: { status: 'Concluído', concluidoEm: new Date(), sobraSemNF: true } });
+    return { codigo: inv.codigo, ajustes, unidadesMais, unidadesMenos, codigoRE, codigoRS, sobras, unidadesSobra: sobras.reduce((a, x) => a + x.quantidade, 0), avisos };
   });
   return res.json(resumo);
 });

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
+import { registrarSobra } from '../lib/divergencias';
 import { badRequest, notFound, num, dataOuNull } from '../lib/http';
 import { criarTitulos, parcelar, somenteDigitos, vencimentoPadrao } from '../lib/financeiro';
 import { usuarioDaRequisicao } from '../lib/auth';
@@ -94,10 +95,27 @@ router.put('/pedidos-compra/:id/receber', async (req, res) => {
       },
     });
 
-    if (recebida > 0) {
+    // ✨ FASE 10: o que vier além do pedido/NF não entra no disponível: vira "Sobra sem NF" com ocorrência
+    const entraDisponivel = Math.min(recebida, pedido.quantidade);
+    const sobra = recebida - entraDisponivel;
+    let ocorrencia: string | null = null;
+    if (sobra > 0) {
+      const quem = req.usuario?.nome ?? (await tx.usuario.findUnique({ where: { id: usuarioId }, select: { nome: true } }))?.nome ?? 'Desconhecido';
+      const nf = req.body?.notaFiscal ? `NF ${req.body.notaFiscal}` : null;
+      const dv = await registrarSobra(tx, {
+        produtoId: pedido.produtoId, quantidade: sobra, armazemId: req.body?.armazemId, lote: req.body?.lote, validade: dataOuNull(req.body?.validade),
+        origem: 'Recebimento', documentoOrigem: [pedido.codigo, nf].filter(Boolean).join(' · ') || null, pedidoCompraId: pedido.id, fornecedorId: pedido.fornecedorId,
+        quantidadeDocumento: pedido.quantidade, quantidadeContada: recebida, criadoPor: quem,
+        observacao: `Recebimento do pedido ${pedido.codigo || ''}: chegaram ${recebida}, pedido/NF ${pedido.quantidade}.`,
+      });
+      ocorrencia = dv?.codigo ?? null;
+      await tx.pedidoCompra.update({ where: { id: pedido.id }, data: { divergencia: `${divergencia} — excedente guardado como sobra sem NF (${ocorrencia})` } });
+    }
+
+    if (entraDisponivel > 0) {
       // ✨ FASE 2: entra no armazém escolhido, com lote e validade
       const parte = await entradaEstoque(tx, {
-        produtoId: pedido.produtoId, quantidade: recebida, armazemId: req.body?.armazemId, lote: req.body?.lote, validade: dataOuNull(req.body?.validade),
+        produtoId: pedido.produtoId, quantidade: entraDisponivel, armazemId: req.body?.armazemId, lote: req.body?.lote, validade: dataOuNull(req.body?.validade),
       });
       await registrarMovimentos(tx, {
         produtoId: pedido.produtoId, usuarioId, tipoAcao: 'Entrada de mercadoria', codigo: await gerarCodigoRequisicao(tx, 'RE'),
@@ -106,9 +124,9 @@ router.put('/pedidos-compra/:id/receber', async (req, res) => {
     }
 
     // ✨ FASE 2: lança o contas a pagar (valor proporcional ao recebido), parcelado se pedido
-    if (req.body?.gerarTitulo !== false && recebida > 0 && pedido.custoTotal > 0) {
+    if (req.body?.gerarTitulo !== false && entraDisponivel > 0 && pedido.custoTotal > 0) {
       const fornecedor = await tx.fornecedor.findUnique({ where: { id: pedido.fornecedorId } });
-      const valor = (pedido.custoTotal / pedido.quantidade) * recebida;
+      const valor = (pedido.custoTotal / pedido.quantidade) * entraDisponivel; // a sobra sem NF não é paga até ter nota
       const primeiro = dataOuNull(req.body?.vencimento) ?? vencimentoPadrao(fornecedor?.prazoPagamentoDias);
       await criarTitulos(tx, parcelar(valor, num(req.body?.parcelas, 1), primeiro).map(p => ({
         tipo: 'PAGAR' as const, descricao: `Pedido ${pedido.codigo || ''} — ${fornecedor?.nomeEmpresa || 'fornecedor'}`, categoria: 'Fornecedores',
@@ -119,7 +137,7 @@ router.put('/pedidos-compra/:id/receber', async (req, res) => {
     if (req.body?.atualizarCusto && pedido.quantidade > 0) {
       await tx.produto.update({ where: { id: pedido.produtoId }, data: { precoCusto: Number((pedido.custoTotal / pedido.quantidade).toFixed(4)) } });
     }
-    return atualizado;
+    return { ...atualizado, ocorrencia, sobra };
   });
   return res.json(resultado);
 });
@@ -183,9 +201,23 @@ router.post('/recebimentos/nfe', async (req, res) => {
   const resultado = await prisma.$transaction(async tx => {
     const codigo = await gerarCodigoRequisicao(tx, 'RE');
     let unidades = 0;
+    const sobras: { codigo: string; sku: string; quantidade: number }[] = [];
+    const cnpjNF = somenteDigitos(req.body?.cnpjEmitente);
+    const fornecedorNF = cnpjNF ? (await tx.fornecedor.findMany({ where: { cnpj: { not: null } } })).find(f => somenteDigitos(f.cnpj) === cnpjNF) : undefined;
+    const quemNF = req.usuario?.nome ?? (await tx.usuario.findUnique({ where: { id: usuarioId }, select: { nome: true } }))?.nome ?? 'Desconhecido';
     for (const item of itens) {
       const qtd = Math.round(num(item.quantidade));
       if (!item.produtoId || qtd <= 0) continue;
+      // ✨ FASE 10: conferência física opcional; o que passar da NF vira sobra sem NF
+      const conferida = item.quantidadeConferida === undefined || item.quantidadeConferida === null || item.quantidadeConferida === '' ? null : Math.max(0, Math.round(num(item.quantidadeConferida)));
+      if (conferida !== null && conferida > qtd) {
+        const dv = await registrarSobra(tx, {
+          produtoId: item.produtoId, quantidade: conferida - qtd, armazemId: req.body?.armazemId, lote: item.lote, validade: dataOuNull(item.validade),
+          origem: 'NF-e', documentoOrigem: `NF ${numero || 's/n'}`, fornecedorId: fornecedorNF?.id ?? null, quantidadeDocumento: qtd, quantidadeContada: conferida, criadoPor: quemNF,
+          observacao: `NF-e ${numero || 's/n'}${emitente ? ` — ${emitente}` : ''}: nota com ${qtd}, conferido ${conferida}.`,
+        });
+        if (dv) sobras.push({ codigo: dv.codigo, sku: dv.produto.sku, quantidade: conferida - qtd });
+      }
       // ✨ FASE 2: armazém de destino + lote/validade lidos do grupo <rastro> da NF-e
       const parte = await entradaEstoque(tx, { produtoId: item.produtoId, quantidade: qtd, armazemId: req.body?.armazemId, lote: item.lote, validade: dataOuNull(item.validade) });
       await registrarMovimentos(tx, {
@@ -212,7 +244,7 @@ router.post('/recebimentos/nfe', async (req, res) => {
       })));
       titulos = criados.length;
     }
-    return { codigo, unidades, itens: itens.length, titulos };
+    return { codigo, unidades, itens: itens.length, titulos, sobras };
   });
   return res.status(201).json(resultado);
 });

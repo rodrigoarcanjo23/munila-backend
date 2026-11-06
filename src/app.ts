@@ -11,6 +11,7 @@ import layoutRoutes from './routes/layout.routes';
 import coletorRoutes from './routes/coletor.routes';
 import wmsRoutes from './routes/wms.routes';
 import inventarioRoutes from './routes/inventario.routes';
+import divergenciasRoutes from './routes/divergencias.routes';
 import gerencialRoutes from './routes/gerencial.routes';
 import fornecedorRoutes from './routes/fornecedor.routes';
 import transformacaoRoutes from './routes/transformacao.routes';
@@ -42,6 +43,7 @@ export function criarApp() {
   app.use(layoutRoutes);        // ✨ /wms/layout, /wms/slotting, /wms/ondas
   app.use(wmsRoutes);           // /wms/ordens
   app.use(inventarioRoutes);    // /inventarios
+  app.use(divergenciasRoutes);  // ✨ /divergencias (sobra sem NF)
   app.use(gerencialRoutes);     // /dashboard/resumo, /dashboard/painel, /gerencial/*
   app.use(armazensRoutes);       // ✨ /armazens
   app.use(financeiroRoutes);     // ✨ /financeiro/*

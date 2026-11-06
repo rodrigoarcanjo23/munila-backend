@@ -18,7 +18,7 @@ router.get('/dashboard/resumo', async (_req, res) => {
     prisma.estoque.findMany({ include: { produto: { select: { precoCusto: true } } } }),
     prisma.estoque.aggregate({ where: { status: STATUS.RUPTURA }, _sum: { quantidade: true } }),
   ]);
-  const custoTotal = estoques.reduce((acc, e) => acc + e.quantidade * (e.produto?.precoCusto || 0), 0);
+  const custoTotal = estoques.filter(e => e.status !== STATUS.SOBRA).reduce((acc, e) => acc + e.quantidade * (e.produto?.precoCusto || 0), 0);
   return res.json({ totalItensCadastrados: totalProdutos, custoTotal, totalRupturas: ruptura._sum.quantidade || 0 });
 });
 
@@ -49,6 +49,7 @@ router.get('/dashboard/painel', async (req, res) => {
   for (const e of estoques) {
     const p = prodMap.get(e.produtoId);
     if (!p) continue;
+    if (e.status === STATUS.SOBRA) continue; // ✨ sobra sem NF fica fora dos valores até ter nota
     if (e.status === STATUS.DISPONIVEL) saldoPorProduto.set(p.id, (saldoPorProduto.get(p.id) || 0) + e.quantidade);
     if (e.status === STATUS.RUPTURA) { rupturaQtd += e.quantidade; rupturaValor += e.quantidade * (p.precoCusto || 0); continue; }
     if (e.status === STATUS.DEMONSTRACAO) demonstracao += e.quantidade;
@@ -140,6 +141,9 @@ router.get('/dashboard/painel', async (req, res) => {
   if (kpis.osUrgentes) alertas.push({ nivel: 'critico', titulo: `${kpis.osUrgentes} ordem(ns) urgente(s) em aberto`, rota: '/separacao' });
   if (pedidosAtrasados) alertas.push({ nivel: 'atencao', titulo: `${pedidosAtrasados} pedido(s) de compra atrasado(s)`, rota: '/compras' });
   if (financeiro.pagarVencido > 0) alertas.push({ nivel: 'critico', titulo: `Contas a pagar vencidas: ${financeiro.pagarVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
+  // ✨ FASE 10: sobras sem NF aguardando regularização
+  const sobrasAbertas = await prisma.divergencia.findMany({ where: { status: { in: ['Aberta', 'Parcial'] } }, select: { quantidade: true, quantidadeResolvida: true } });
+  if (sobrasAbertas.length) alertas.push({ nivel: 'atencao', titulo: `${sobrasAbertas.length} sobra(s) sem NF aguardando regularização (${sobrasAbertas.reduce((a, d) => a + d.quantidade - d.quantidadeResolvida, 0)} un)`, rota: '/divergencias' });
   if (financeiro.receberVencido > 0) alertas.push({ nivel: 'atencao', titulo: `Recebimentos em atraso: ${financeiro.receberVencido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`, rota: '/financeiro' });
   if (inventariosAbertos) alertas.push({ nivel: 'info', titulo: `${inventariosAbertos} inventário(s) em andamento`, rota: '/inventario' });
 

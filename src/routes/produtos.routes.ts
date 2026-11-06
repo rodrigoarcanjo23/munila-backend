@@ -167,6 +167,7 @@ router.get('/produtos/:id/kardex', async (req, res) => {
   ]);
   const armazens = new Map(estoques.filter(e => e.armazem).map(e => [e.armazemId!, e.armazem!.nome]));
   const saldoAtual = estoques.filter(e => e.status === STATUS.DISPONIVEL).reduce((a, e) => a + e.quantidade, 0);
+  const sobraSemNF = estoques.filter(e => e.status === STATUS.SOBRA).reduce((a, e) => a + e.quantidade, 0); // ✨ FASE 10
 
   let saldo = saldoAtual;
   const linhas = movs.map(m => {
@@ -183,6 +184,7 @@ router.get('/produtos/:id/kardex', async (req, res) => {
   return res.json({
     produto,
     saldoAtual,
+    sobraSemNF,
     saldoInicial: saldo, // saldo de implantação (antes do primeiro lançamento registrado)
     // ✨ FASE 2: saldo disponível por armazém e por lote (ordem FEFO)
     lotes: estoques

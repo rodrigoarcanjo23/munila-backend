@@ -8,6 +8,8 @@ export const STATUS = {
   DISPONIVEL: 'Disponível',
   DEMONSTRACAO: 'Em Demonstração',
   RUPTURA: 'Ruptura',
+  /** ✨ FASE 10: unidades a mais (inventário/recebimento) sem nota fiscal: existem, mas não podem ser pedidas nem vendidas. */
+  SOBRA: 'Sobra sem NF',
 } as const;
 
 /** Tipos que somam ao saldo disponível. */
@@ -19,6 +21,7 @@ export const TIPOS_ENTRADA = [
   'Retorno de demonstração',
   'Transferência (entrada)',
   'Estorno de produção (entrada)',
+  'Regularização de sobra (NF)',   // ✨ FASE 10: sobra sem NF que ganhou nota e virou saldo disponível
 ];
 
 /** Tipos que retiram do saldo disponível. */

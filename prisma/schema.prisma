@@ -54,6 +54,7 @@ model Armazem {
   ordens     OrdemTransferencia[]
   inventarios Inventario[]
   ordensProducao OrdemProducao[]
+  divergencias Divergencia[]   // ✨ FASE 10
 }
 
 model Usuario {
@@ -119,6 +120,7 @@ model Produto {
   ordensProducao      OrdemProducao[]
   componentesOP       OrdemProducaoComponente[]
   planosProducao      PlanoProducao[]
+  divergencias        Divergencia[]   // ✨ FASE 10
 }
 
 model Composicao {
@@ -190,6 +192,7 @@ model Fornecedor {
   produtos      Produto[]
   pedidosCompra PedidoCompra[]
   titulos       Titulo[]
+  divergencias  Divergencia[]   // ✨ FASE 10
 }
 
 model PedidoCompra {
@@ -309,6 +312,7 @@ model Inventario {
   itens         InventarioItem[]
   createdAt     DateTime         @default(now())
   concluidoEm   DateTime?
+  sobraSemNF    Boolean          @default(false) // ✨ FASE 10: concluído já com a regra de sobra sem NF (a sobra não foi para o disponível)
 }
 
 model InventarioItem {
@@ -734,4 +738,58 @@ model TfRequisicaoItem {
   quantidadeEntregue Float?
   lotes              Json?        // [{ loteId, codigo, quantidade }] entregues pela logística
   avariada           Float        @default(0)
+}
+
+// ============================================================
+// ✨ FASE 10: DIVERGÊNCIAS DE ESTOQUE (sobra sem NF)
+// Sobra encontrada no inventário ou no recebimento não entra no saldo disponível: fica numa linha de
+// estoque com status "Sobra sem NF" e numa ocorrência, até ser resolvida por um destes caminhos:
+//   NOVA_NF    – fornecedor emitiu a nota das unidades a mais: a sobra vira saldo disponível
+//   DEVOLUCAO  – o excedente saiu (devolução ao fornecedor / retirada pelo dono)
+//   AJUSTE     – incorporada por ajuste de inventário, com aprovação de gestor
+//   RECONTAGEM – a recontagem não confirmou a sobra: a linha é baixada
+// ============================================================
+model Divergencia {
+  id                  String                  @id @default(uuid())
+  codigo              String                  @unique
+  tipo                String                  @default("SOBRA")
+  origem              String                  // Inventário | Recebimento | NF-e
+  documentoOrigem     String?                 // INV…, PC…, NF …
+  inventarioId        String?
+  pedidoCompraId      String?
+  produtoId           String
+  produto             Produto                 @relation(fields: [produtoId], references: [id])
+  armazemId           String?
+  armazem             Armazem?                @relation(fields: [armazemId], references: [id])
+  lote                String?
+  validade            DateTime?
+  fornecedorId        String?
+  fornecedor          Fornecedor?             @relation(fields: [fornecedorId], references: [id])
+  quantidadeDocumento Int?                    // o que o sistema/nota dizia
+  quantidadeContada   Int?                    // o que foi contado
+  quantidade          Int                     // sobra (contado − documento)
+  quantidadeResolvida Int                     @default(0)
+  status              String                  @default("Aberta") // Aberta | Parcial | Resolvida
+  observacao          String?
+  criadoPor           String
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  resolvidaEm         DateTime?
+  resolucoes          DivergenciaResolucao[]
+
+  @@index([status])
+  @@index([produtoId])
+}
+
+model DivergenciaResolucao {
+  id             String      @id @default(uuid())
+  divergenciaId  String
+  divergencia    Divergencia @relation(fields: [divergenciaId], references: [id], onDelete: Cascade)
+  tipo           String      // NOVA_NF | DEVOLUCAO | AJUSTE | RECONTAGEM
+  quantidade     Int
+  documento      String?
+  justificativa  String?
+  usuarioNome    String
+  codigoMovimento String?
+  createdAt      DateTime    @default(now())
 }

@@ -124,6 +124,7 @@ router.post('/movimentacoes/operacao', async (req, res) => {
   const resultado = await prisma.$transaction(async tx => {
     const estoque = await tx.estoque.findUnique({ where: { id: estoqueId } });
     if (!estoque) throw new Error('Estoque não encontrado.');
+    if (estoque.status === STATUS.SOBRA) throw new Error('Sobra sem NF não se movimenta por aqui: regularize na tela Divergências (nova NF, devolução ou ajuste aprovado).');
     const lugar = { armazemId: estoque.armazemId, lote: estoque.lote, validade: estoque.validade };
     let novoSaldo = estoque.quantidade;
     let codigo: string;

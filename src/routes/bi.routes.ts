@@ -98,6 +98,7 @@ router.get('/bi/painel', async (req, res) => {
     }
     if (armazemId && e.armazemId !== armazemId) continue;
     if (!prodIds.has(e.produtoId)) continue;
+    if (e.status === STATUS.SOBRA) continue; // ✨ sobra sem NF não é estoque utilizável nem capital
     if (e.status === STATUS.DEMONSTRACAO) { valorDemonstracao += e.quantidade * c; continue; }
     if (e.status === STATUS.RUPTURA) { valorRuptura += e.quantidade * c; continue; }
     saldo.set(e.produtoId, (saldo.get(e.produtoId) || 0) + e.quantidade);
