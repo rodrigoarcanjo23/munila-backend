@@ -12,6 +12,7 @@ import coletorRoutes from './routes/coletor.routes';
 import wmsRoutes from './routes/wms.routes';
 import inventarioRoutes from './routes/inventario.routes';
 import divergenciasRoutes from './routes/divergencias.routes';
+import fichaRoutes from './routes/ficha.routes';
 import gerencialRoutes from './routes/gerencial.routes';
 import fornecedorRoutes from './routes/fornecedor.routes';
 import transformacaoRoutes from './routes/transformacao.routes';
@@ -43,6 +44,7 @@ export function criarApp() {
   app.use(layoutRoutes);        // ✨ /wms/layout, /wms/slotting, /wms/ondas
   app.use(wmsRoutes);           // /wms/ordens
   app.use(inventarioRoutes);    // /inventarios
+  app.use(fichaRoutes);         // ✨ /estoque/lancamento, /estoque/produtos, /estoque/ficha, /estoque/linhas
   app.use(divergenciasRoutes);  // ✨ /divergencias (sobra sem NF)
   app.use(gerencialRoutes);     // /dashboard/resumo, /dashboard/painel, /gerencial/*
   app.use(armazensRoutes);       // ✨ /armazens

@@ -42,7 +42,7 @@ router.get('/coletor/consulta', async (req, res) => {
   if (!codigo) throw badRequest('Bipe ou digite um código.');
   const armazemId = await armazemPadrao();
 
-  let produto = await prisma.produto.findFirst({ where: { OR: [{ codigoBarras: codigo }, { sku: { equals: codigo, mode: 'insensitive' } }] }, select: SELECT_PRODUTO });
+  let produto = await prisma.produto.findFirst({ where: { OR: [{ codigoBarras: codigo }, { sku: { equals: codigo, mode: 'insensitive' } }, { eans: { some: { codigo } } }] }, select: SELECT_PRODUTO });
   let loteBipado: string | null = null;
   if (!produto) {
     const linha = await prisma.estoque.findFirst({ where: { lote: { equals: codigo, mode: 'insensitive' }, quantidade: { gt: 0 } }, select: { produtoId: true, lote: true } });

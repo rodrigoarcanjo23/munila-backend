@@ -171,22 +171,24 @@ const loteNorm = (l?: string | null) => (l && String(l).trim() ? String(l).trim(
  */
 export async function linhaEstoque(
   db: Db, produtoId: string, status: string = STATUS.DISPONIVEL,
-  opts: { armazemId?: string | null; lote?: string | null; validade?: Date | null } = {},
+  opts: { armazemId?: string | null; lote?: string | null; validade?: Date | null; localizacaoId?: string | null } = {},
 ) {
   const armazemId = opts.armazemId || (await armazemPadrao(db));
   const lote = loteNorm(opts.lote);
-  const existente = await db.estoque.findFirst({ where: { produtoId, status, armazemId, lote }, orderBy: { quantidade: 'desc' } });
+  // ✨ FASE 11: com localizacaoId informado (inclusive null), a linha é a daquele endereço; sem ele, qualquer endereço serve (comportamento antigo)
+  const porEndereco = opts.localizacaoId !== undefined ? { localizacaoId: opts.localizacaoId } : {};
+  const existente = await db.estoque.findFirst({ where: { produtoId, status, armazemId, lote, ...porEndereco }, orderBy: { quantidade: 'desc' } });
   if (existente) {
     if (opts.validade && !existente.validade) return db.estoque.update({ where: { id: existente.id }, data: { validade: opts.validade } });
     return existente;
   }
-  return db.estoque.create({ data: { produtoId, quantidade: 0, status, armazemId, lote, validade: opts.validade ?? null } });
+  return db.estoque.create({ data: { produtoId, quantidade: 0, status, armazemId, lote, validade: opts.validade ?? null, localizacaoId: opts.localizacaoId ?? null } });
 }
 
 export interface ParteLote { estoqueId: string; lote: string | null; validade: Date | null; quantidade: number; armazemId: string | null }
 
 /** Entrada de saldo disponível num armazém/lote. */
-export async function entradaEstoque(db: Db, a: { produtoId: string; quantidade: number; armazemId?: string | null; lote?: string | null; validade?: Date | null; status?: string }) {
+export async function entradaEstoque(db: Db, a: { produtoId: string; quantidade: number; armazemId?: string | null; lote?: string | null; validade?: Date | null; status?: string; localizacaoId?: string | null }) {
   const linha = await linhaEstoque(db, a.produtoId, a.status ?? STATUS.DISPONIVEL, a);
   const atualizada = await db.estoque.update({ where: { id: linha.id }, data: { quantidade: { increment: a.quantidade } } });
   return { estoqueId: atualizada.id, lote: atualizada.lote, validade: atualizada.validade, quantidade: a.quantidade, armazemId: atualizada.armazemId } as ParteLote;
@@ -197,7 +199,7 @@ export async function lotesFEFO(db: Db, produtoId: string, armazemId?: string | 
   const arm = armazemId || (await armazemPadrao(db));
   const linhas = await db.estoque.findMany({
     where: { produtoId, status: STATUS.DISPONIVEL, armazemId: arm, quantidade: { gt: 0 }, ...(lote ? { lote: loteNorm(lote) } : {}) },
-    include: { produto: { select: { validade: true } } },
+    include: { produto: { select: { validade: true } }, localizacao: { select: { codigo: true } } },
   });
   const val = (l: (typeof linhas)[number]) => (l.validade ?? l.produto.validade)?.getTime() ?? Number.MAX_SAFE_INTEGER;
   return linhas.sort((a, b) => val(a) - val(b) || (a.lote || '\uffff').localeCompare(b.lote || '\uffff'));

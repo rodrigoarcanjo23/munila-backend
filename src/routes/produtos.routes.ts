@@ -11,10 +11,11 @@ const INCLUDE_PRODUTO = {
   categoria: true,
   fornecedor: true,
   ingredientes: { include: { produtoFilho: true } },
+  eans: { select: { codigo: true, embalagem: true } },   // ✨ FASE 11: códigos extras (caixa, display...)
 } as const;
 
 /** Monta os campos gravados de um produto a partir do corpo da requisição (POST e PUT). */
-function dadosProduto(body: any) {
+export function dadosProduto(body: any) {
   const minimoInformado = body.estoqueMinimo !== undefined && body.estoqueMinimo !== '' ? intOuNull(body.estoqueMinimo) : undefined;
   // Se o mínimo não veio no campo novo, tenta ler da tag [MIN:x] enviada pelo app mobile.
   const minimo = minimoInformado !== undefined ? minimoInformado : body.descricao?.match(/\[MIN:(\d+)\]/) ? estoqueMinimoDe({ descricao: body.descricao }) : undefined;
@@ -45,10 +46,15 @@ function dadosProduto(body: any) {
     cest: body.cest !== undefined ? (String(body.cest).replace(/\D/g, '') || null) : undefined,
     origemFiscal: body.origemFiscal !== undefined ? intOuNull(body.origemFiscal) : undefined,
     cfopPadrao: body.cfopPadrao !== undefined ? (String(body.cfopPadrao).replace(/\D/g, '') || null) : undefined,
+    // ✨ FASE 11: ficha do item
+    fabricante: opt(body.fabricante),
+    linha: opt(body.linha),
+    referenciaFabricante: opt(body.referenciaFabricante),
+    embalagem: body.embalagem !== undefined ? intOuNull(body.embalagem) : undefined,
   };
 }
 
-async function validarUnicos(sku: string, codigoBarras: string | null | undefined, idAtual?: string) {
+export async function validarUnicos(sku: string, codigoBarras: string | null | undefined, idAtual?: string) {
   const skuExistente = await prisma.produto.findUnique({ where: { sku } });
   if (skuExistente && skuExistente.id !== idAtual) throw badRequest(idAtual ? 'SKU pertence a outro produto.' : 'SKU já cadastrado.');
   if (codigoBarras) {
@@ -70,7 +76,7 @@ router.get('/produtos/busca', async (req, res) => {
   const codigo = String(req.query.codigo || '').trim();
   if (!codigo) throw badRequest('Informe o código.');
   const produto = await prisma.produto.findFirst({
-    where: { OR: [{ codigoBarras: codigo }, { sku: { equals: codigo, mode: 'insensitive' } }] },
+    where: { OR: [{ codigoBarras: codigo }, { sku: { equals: codigo, mode: 'insensitive' } }, { eans: { some: { codigo } } }] },
     include: { ...INCLUDE_PRODUTO, estoques: { include: { localizacao: true } } },
   });
   if (!produto) throw notFound('Nenhum produto com este código.');

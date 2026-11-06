@@ -4,6 +4,7 @@ import { badRequest, notFound, num } from '../lib/http';
 import { perfilDe, usuarioDaRequisicao } from '../lib/auth';
 import { dataOuNull } from '../lib/http';
 import { registrarSobra, sobraPendente } from '../lib/divergencias';
+import { classesAbc } from '../lib/abc';
 import { STATUS, armazemPadrao, entradaEstoque, garantirEstoqueDisponivel, gerarCodigoInventario, gerarCodigoRequisicao, linhaEstoque, registrarMovimentos, saidaFEFO, saldosDisponiveis } from '../lib/estoque';
 
 /**
@@ -30,6 +31,28 @@ router.get('/inventarios', async (_req, res) => {
   })));
 });
 
+// ✨ Escolha dos itens: tudo o que o operador precisa para decidir o que contar
+router.get('/inventarios/candidatos', async (req, res) => {
+  const armazemId = req.query.armazemId ? String(req.query.armazemId) : await armazemPadrao();
+  const [produtos, saldos, abc, contagens, abertos] = await Promise.all([
+    prisma.produto.findMany({ select: { id: true, sku: true, nome: true, codigoBarras: true, enderecoLocalizacao: true, estoqueMinimo: true, unidade: true, precoCusto: true, categoria: { select: { id: true, nome: true } } }, orderBy: { nome: 'asc' } }),
+    saldosDisponiveis(prisma, armazemId),
+    classesAbc(prisma),
+    prisma.inventarioItem.groupBy({ by: ['produtoId'], where: { contadoEm: { not: null }, inventario: { status: 'Concluído', armazemId } }, _max: { contadoEm: true } }),
+    prisma.inventarioItem.findMany({ where: { inventario: { status: { in: ['Aberto', 'Em contagem'] }, armazemId } }, select: { produtoId: true, inventario: { select: { codigo: true } } } }),
+  ]);
+  const ultima = new Map(contagens.map(c => [c.produtoId, c._max.contadoEm]));
+  const emAberto = new Map(abertos.map(a => [a.produtoId, a.inventario.codigo]));
+  return res.json(produtos.map(p => {
+    const saldo = saldos.get(p.id) || 0;
+    return {
+      produtoId: p.id, sku: p.sku, nome: p.nome, codigoBarras: p.codigoBarras, endereco: p.enderecoLocalizacao, unidade: p.unidade,
+      categoria: p.categoria, saldo, valor: saldo * (p.precoCusto || 0), classe: abc.get(p.id) ?? 'C',
+      abaixoMinimo: p.estoqueMinimo != null && saldo < p.estoqueMinimo, ultimaContagem: ultima.get(p.id) ?? null, emInventario: emAberto.get(p.id) ?? null,
+    };
+  }));
+});
+
 router.post('/inventarios', async (req, res) => {
   const { descricao, tipo, cego, categoriaId, produtoIds, enderecoPrefixo } = req.body || {};
   const armazemId = req.body?.armazemId || (await armazemPadrao());
@@ -44,7 +67,8 @@ router.post('/inventarios', async (req, res) => {
     },
     select: { id: true },
   });
-  if (produtos.length === 0) throw badRequest('Nenhum produto atende aos filtros escolhidos.');
+  if (produtos.length === 0) throw badRequest(Array.isArray(produtoIds) && produtoIds.length ? 'Nenhum dos itens escolhidos foi encontrado.' : 'Nenhum produto atende aos filtros escolhidos.');
+  if (tipo !== 'Geral' && !(Array.isArray(produtoIds) && produtoIds.length) && !categoriaId && !enderecoPrefixo) throw badRequest('Escolha os itens a contar (ou use o inventário geral).');
   const saldos = await saldosDisponiveis(prisma, armazemId);
 
   const inventario = await prisma.$transaction(async tx =>
@@ -83,6 +107,31 @@ router.get('/inventarios/:id', async (req, res) => {
     }))
     .sort((a, b) => (a.produto.enderecoLocalizacao || 'ZZZ').localeCompare(b.produto.enderecoLocalizacao || 'ZZZ') || a.produto.nome.localeCompare(b.produto.nome));
   return res.json({ ...inv, itens, saldoRevelado: revelar });
+});
+
+// ✨ Acrescentar itens a um inventário em andamento (o saldo do sistema é registrado agora)
+router.post('/inventarios/:id/itens', async (req, res) => {
+  const inv = await prisma.inventario.findUnique({ where: { id: req.params.id }, include: { itens: { select: { produtoId: true } } } });
+  if (!inv) throw notFound('Inventário não encontrado.');
+  if (inv.status === 'Concluído' || inv.status === 'Cancelado') throw badRequest('Inventário encerrado.');
+  const ja = new Set(inv.itens.map(i => i.produtoId));
+  const ids = (Array.isArray(req.body?.produtoIds) ? req.body.produtoIds : []).map(String).filter((id: string) => !ja.has(id));
+  if (!ids.length) throw badRequest('Escolha itens que ainda não estão neste inventário.');
+  const saldos = await saldosDisponiveis(prisma, inv.armazemId);
+  const existentes = await prisma.produto.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  await prisma.inventarioItem.createMany({ data: existentes.map(p => ({ inventarioId: inv.id, produtoId: p.id, saldoSistema: saldos.get(p.id) ?? 0 })) });
+  return res.status(201).json({ adicionados: existentes.length });
+});
+
+// ✨ Tirar do inventário um item que ainda não foi contado
+router.delete('/inventarios/:id/itens/:itemId', async (req, res) => {
+  const item = await prisma.inventarioItem.findUnique({ where: { id: req.params.itemId }, include: { inventario: { select: { status: true, _count: { select: { itens: true } } } } } });
+  if (!item || item.inventarioId !== req.params.id) throw notFound('Item não encontrado.');
+  if (item.inventario.status === 'Concluído' || item.inventario.status === 'Cancelado') throw badRequest('Inventário encerrado.');
+  if (item.quantidadeContada !== null) throw badRequest('Este item já foi contado. Apague a contagem antes de tirá-lo do inventário.');
+  if (item.inventario._count.itens <= 1) throw badRequest('O inventário precisa de pelo menos um item. Cancele o inventário se não for mais contar nada.');
+  await prisma.inventarioItem.delete({ where: { id: item.id } });
+  return res.status(204).send();
 });
 
 router.put('/inventarios/:id/itens/:itemId', async (req, res) => {

@@ -29,6 +29,7 @@ model Localizacao {
   armazemId  String?   // ✨ FASE 2
   armazem    Armazem?  @relation(fields: [armazemId], references: [id])
   estoques   Estoque[]
+  pickings   ProdutoPicking[]   // ✨ FASE 11
 
   // ✨ FASE 7: posição física para mapa, slotting e rota de separação
   rua        String?            // corredor (A, B, 01, 02...)
@@ -103,6 +104,15 @@ model Produto {
   cest                String?
   origemFiscal        Int?           // 0 nacional, 1 importação direta, 2 importada adquirida no mercado interno...
   cfopPadrao          String?
+
+  // ✨ FASE 11: ficha do item (cadastro completo)
+  fabricante          String?
+  linha               String?        // linha / família comercial
+  referenciaFabricante String?
+  embalagem           Int?           // unidades por caixa fechada
+  eans                ProdutoEan[]
+  dimensoes           ProdutoDimensao[]
+  pickings            ProdutoPicking[]
 
   fornecedorId        String?
   fornecedor          Fornecedor?    @relation(fields: [fornecedorId], references: [id])
@@ -792,4 +802,43 @@ model DivergenciaResolucao {
   usuarioNome    String
   codigoMovimento String?
   createdAt      DateTime    @default(now())
+}
+
+// ============================================================
+// ✨ FASE 11: FICHA DO ITEM (vários EANs, dimensões, picking × armazenamento)
+// ============================================================
+model ProdutoEan {
+  id         String  @id @default(uuid())
+  produtoId  String
+  produto    Produto @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  codigo     String  @unique
+  embalagem  Int     @default(1)   // quantas unidades este código representa (1 = unidade, 24 = caixa)
+  padrao     Boolean @default(false)
+}
+
+model ProdutoDimensao {
+  id           String  @id @default(uuid())
+  produtoId    String
+  produto      Produto @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  tipo         String  // CADASTRO (unidade) | COMPRA (caixa do fornecedor)
+  embalagem    String  @default("UN")
+  quantidade   Int     @default(1) // unidades nesta embalagem
+  altura       Float?  // cm
+  largura      Float?  // cm
+  profundidade Float?  // cm
+  peso         Float?  // g
+
+  @@unique([produtoId, tipo])
+}
+
+model ProdutoPicking {
+  id            String      @id @default(uuid())
+  produtoId     String
+  produto       Produto     @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  localizacaoId String
+  localizacao   Localizacao @relation(fields: [localizacaoId], references: [id])
+  minimo        Int         @default(0)
+  maximo        Int         @default(0)
+
+  @@unique([produtoId, localizacaoId])
 }

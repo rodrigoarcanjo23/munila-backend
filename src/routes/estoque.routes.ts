@@ -46,7 +46,7 @@ router.get('/estoque/lotes', async (req, res) => {
   const produtoId = String(req.query.produtoId || '');
   if (!produtoId) throw badRequest('Informe o produto.');
   const linhas = await lotesFEFO(prisma, produtoId, (req.query.armazemId as string) || null);
-  return res.json(linhas.map(l => ({ estoqueId: l.id, lote: l.lote, validade: l.validade ?? l.produto.validade, quantidade: l.quantidade, armazemId: l.armazemId })));
+  return res.json(linhas.map(l => ({ estoqueId: l.id, lote: l.lote, validade: l.validade ?? l.produto.validade, quantidade: l.quantidade, armazemId: l.armazemId, endereco: l.localizacao?.codigo ?? null })));
 });
 
 /** ✨ FASE 2: entrada avulsa com armazém, lote e validade. */
