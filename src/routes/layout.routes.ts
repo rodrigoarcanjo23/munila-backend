@@ -50,7 +50,7 @@ async function contexto(db: Db, armazemParam: unknown, dias = 90) {
   return { armazemId, layout, giro, saldo, estoqueArm, locais, doArmazem };
 }
 
-const posResumo = (p: Posicao | null) => (p ? { id: p.id, codigo: p.codigo, rua: p.rua, modulo: p.modulo, nivel: p.nivel, custo: p.custo, dourada: zonaDourada(p.nivel) } : null);
+const posResumo = (p: Posicao | null) => (p ? { id: p.id, codigo: p.codigo, codigoBarras: p.codigoBarras ?? null, rua: p.rua, modulo: p.modulo, nivel: p.nivel, custo: p.custo, dourada: zonaDourada(p.nivel) } : null);
 
 // ================================================================== mapa
 router.get('/wms/layout', async (req, res) => {
@@ -231,7 +231,7 @@ router.post('/wms/slotting/aplicar', async (req, res) => {
 
 // ================================================================== ondas
 export type OrdemOnda = { id: string; codigo: string; prioridade: string; createdAt: Date; armazemId: string | null; itens: { id: string; produtoId: string; quantidade: number; marcado: boolean; produto: { id: string; nome: string; sku: string; codigoBarras?: string | null; enderecoLocalizacao?: string | null } }[] };
-export const SELECT_PRODUTO_COLETA = { id: true, nome: true, sku: true, codigoBarras: true, enderecoLocalizacao: true } as const;
+export const SELECT_PRODUTO_COLETA = { id: true, nome: true, sku: true, codigoBarras: true, enderecoLocalizacao: true, eans: { select: { codigo: true } } } as const;
 
 /** Monta as paradas da rota: uma por produto e lote (FEFO), no endereço do lote quando houver, senão no endereço do produto. */
 async function montarColeta(db: Db, ordens: OrdemOnda[], layout: Layout, giro: ProdutoGiro[], armazemId: string) {

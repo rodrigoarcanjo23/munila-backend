@@ -9,7 +9,7 @@ import { normalizarEndereco, zonaDourada } from '../lib/armazem';
 import { SELECT_PRODUTO_COLETA, coletaRoteirizada, type OrdemOnda } from './layout.routes';
 
 const router = Router();
-const SELECT_PRODUTO = { id: true, sku: true, nome: true, codigoBarras: true, unidade: true, enderecoLocalizacao: true, estoqueMinimo: true, categoria: { select: { nome: true } } } as const;
+const SELECT_PRODUTO = { id: true, sku: true, nome: true, codigoBarras: true, unidade: true, enderecoLocalizacao: true, estoqueMinimo: true, embalagem: true, categoria: { select: { nome: true } }, eans: { select: { codigo: true, embalagem: true } } } as const;
 type ProdutoSel = Prisma.ProdutoGetPayload<{ select: typeof SELECT_PRODUTO }>;
 
 /** Números da tela inicial do coletor. */
@@ -59,27 +59,52 @@ router.get('/coletor/consulta', async (req, res) => {
   const pelaEtiqueta = produtosNoTexto.filter(p => normalizarEndereco(p.enderecoLocalizacao) === normLocal);
   if (!local && !pelaEtiqueta.length) throw notFound('Nenhum produto, lote ou endereço com este código.');
 
-  const linhas = local ? await prisma.estoque.findMany({ where: { localizacaoId: local.id, status: STATUS.DISPONIVEL, quantidade: { gt: 0 } }, include: { produto: { select: SELECT_PRODUTO } } }) : [];
+  // linhas guardadas no endereço + linhas sem endereço próprio de produtos cujo endereço do cadastro é este
+  const linhas = await prisma.estoque.findMany({
+    where: { status: STATUS.DISPONIVEL, quantidade: { gt: 0 }, OR: [...(local ? [{ localizacaoId: local.id }] : []), { localizacaoId: null, produtoId: { in: pelaEtiqueta.map(p => p.id) }, ...(local?.armazemId ? { armazemId: local.armazemId } : {}) }] },
+    include: { produto: { select: SELECT_PRODUTO } },
+  });
   const itens = new Map<string, { produto: (typeof linhas)[number]['produto']; quantidade: number; lotes: { lote: string | null; validade: Date | null; quantidade: number }[]; picking: boolean }>();
   for (const l of linhas) {
     const it = itens.get(l.produtoId) ?? { produto: l.produto, quantidade: 0, lotes: [], picking: normalizarEndereco(l.produto.enderecoLocalizacao) === normLocal };
     it.quantidade += l.quantidade; it.lotes.push({ lote: l.lote, validade: l.validade, quantidade: l.quantidade });
     itens.set(l.produtoId, it);
   }
-  for (const p of pelaEtiqueta) if (!itens.has(p.id)) {
-    const saldo = await prisma.estoque.aggregate({ where: { produtoId: p.id, status: STATUS.DISPONIVEL, armazemId }, _sum: { quantidade: true } });
-    itens.set(p.id, { produto: p, quantidade: saldo._sum.quantidade ?? 0, lotes: [], picking: true });
-  }
+  for (const p of pelaEtiqueta) if (!itens.has(p.id)) itens.set(p.id, { produto: p, quantidade: 0, lotes: [], picking: true });
+
+  // ✨ FASE 12: onde mais cada item está (endereço e quantidade)
+  const ids = [...itens.keys()];
+  const todas = ids.length ? await prisma.estoque.findMany({ where: { produtoId: { in: ids }, status: STATUS.DISPONIVEL, quantidade: { gt: 0 } }, select: { id: true, produtoId: true, quantidade: true, localizacaoId: true, localizacao: { select: { id: true, codigo: true } }, armazem: { select: { nome: true } } } }) : [];
+  const aqui = new Set(linhas.map(l => l.id));
+  const outrosDe = (produtoId: string, cadastro: string | null) => {
+    const m = new Map<string, { localizacaoId: string | null; codigo: string; armazem: string | null; quantidade: number }>();
+    for (const l of todas.filter(x => x.produtoId === produtoId && !aqui.has(x.id))) {
+      const cod = l.localizacao?.codigo ?? cadastro ?? 'Sem endereço';
+      const k = `${cod}|${l.armazem?.nome ?? ''}`;
+      const o = m.get(k) ?? { localizacaoId: l.localizacao?.id ?? null, codigo: cod, armazem: l.armazem?.nome ?? null, quantidade: 0 };
+      o.quantidade += l.quantidade; m.set(k, o);
+    }
+    return [...m.values()].sort((a, b) => b.quantidade - a.quantidade);
+  };
   return res.json({
     tipo: 'endereco',
-    endereco: { codigo: local?.codigo ?? codigo.toUpperCase(), rua: local?.rua ?? null, modulo: local?.modulo ?? null, nivel: local?.nivel ?? null, tipo: local?.tipo ?? null, dourada: zonaDourada(local?.nivel), cadastrado: Boolean(local) },
-    itens: [...itens.values()].map(i => ({ ...i, produto: { ...i.produto, categoria: i.produto.categoria?.nome ?? null } })),
+    endereco: {
+      id: local?.id ?? null, codigo: local?.codigo ?? codigo.toUpperCase(), codigoBarras: local?.codigoBarras ?? null,
+      rua: local?.rua ?? null, modulo: local?.modulo ?? null, nivel: local?.nivel ?? null, apartamento: local?.apartamento ?? null,
+      tipo: local?.tipo ?? null, zona: local?.zona ?? null, armazemId: local?.armazemId ?? null, dourada: zonaDourada(local?.nivel), cadastrado: Boolean(local),
+    },
+    itens: [...itens.values()]
+      .map(i => {
+        const outros = outrosDe(i.produto.id, i.produto.enderecoLocalizacao);
+        return { ...i, produto: { ...i.produto, categoria: i.produto.categoria?.nome ?? null }, outros, total: i.quantidade + outros.reduce((a, o) => a + o.quantidade, 0) };
+      })
+      .sort((a, b) => b.quantidade - a.quantidade),
   });
 });
 
 async function consultaProduto(produto: ProdutoSel, loteBipado: string | null, armazemId: string) {
   const [linhas, fefo, pedidos, ultima] = await Promise.all([
-    prisma.estoque.findMany({ where: { produtoId: produto.id, quantidade: { gt: 0 } }, include: { localizacao: { select: { codigo: true } }, armazem: { select: { nome: true } } } }),
+    prisma.estoque.findMany({ where: { produtoId: produto.id, quantidade: { gt: 0 } }, include: { localizacao: { select: { id: true, codigo: true } }, armazem: { select: { id: true, nome: true } } } }),
     lotesFEFO(prisma, produto.id, armazemId),
     prisma.pedidoCompra.aggregate({ where: { produtoId: produto.id, status: 'Pendente' }, _sum: { quantidade: true } }),
     prisma.movimentacao.findFirst({ where: { produtoId: produto.id, tipoAcao: { in: TIPOS_CONSUMO }, dataHora: { gte: diasAtras(365) } }, orderBy: { dataHora: 'desc' }, select: { dataHora: true } }),
@@ -95,7 +120,14 @@ async function consultaProduto(produto: ProdutoSel, loteBipado: string | null, a
     ultimaSaida: ultima?.dataHora ?? null,
     lotes: linhas.filter(l => l.status === STATUS.DISPONIVEL)
       .sort((a, b) => (a.validade?.getTime() ?? Infinity) - (b.validade?.getTime() ?? Infinity))
-      .map(l => ({ lote: l.lote, validade: l.validade, quantidade: l.quantidade, endereco: l.localizacao?.codigo ?? produto.enderecoLocalizacao ?? null, armazem: l.armazem?.nome ?? null, primeiroASair: l.id === primeiroFefo })),
+      .map(l => ({ estoqueId: l.id, localizacaoId: l.localizacaoId, armazemId: l.armazemId, lote: l.lote, validade: l.validade, quantidade: l.quantidade, endereco: l.localizacao?.codigo ?? produto.enderecoLocalizacao ?? null, armazem: l.armazem?.nome ?? null, primeiroASair: l.id === primeiroFefo })),
+    // ✨ FASE 12: em quais endereços o produto está e quanto há em cada um (maior primeiro)
+    enderecos: [...linhas.filter(l => l.status === STATUS.DISPONIVEL).reduce((m, l) => {
+      const cod = l.localizacao?.codigo ?? produto.enderecoLocalizacao ?? 'Sem endereço';
+      const k = `${cod}|${l.armazem?.id ?? ''}`;
+      const o = m.get(k) ?? { localizacaoId: l.localizacao?.id ?? null, codigo: cod, armazem: l.armazem?.nome ?? null, quantidade: 0, principal: normalizarEndereco(cod) === normalizarEndereco(produto.enderecoLocalizacao) };
+      o.quantidade += l.quantidade; m.set(k, o); return m;
+    }, new Map<string, { localizacaoId: string | null; codigo: string; armazem: string | null; quantidade: number; principal: boolean }>()).values()].sort((a, b) => b.quantidade - a.quantidade),
   };
 }
 

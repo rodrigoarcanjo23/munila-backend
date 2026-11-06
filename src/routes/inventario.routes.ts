@@ -88,7 +88,7 @@ router.get('/inventarios/:id', async (req, res) => {
     include: {
       responsavel: { select: { nome: true } },
       armazem: true,
-      itens: { include: { produto: { select: { id: true, sku: true, nome: true, codigoBarras: true, enderecoLocalizacao: true, precoCusto: true, unidade: true } }, contadoPor: { select: { nome: true } } } },
+      itens: { include: { produto: { select: { id: true, sku: true, nome: true, codigoBarras: true, enderecoLocalizacao: true, precoCusto: true, unidade: true, eans: { select: { codigo: true } } } }, contadoPor: { select: { nome: true } } } },
     },
   });
   if (!inv) throw notFound('Inventário não encontrado.');
@@ -106,7 +106,10 @@ router.get('/inventarios/:id', async (req, res) => {
       lotes: linhasLote.filter(l => l.produtoId === i.produtoId).map(l => ({ lote: l.lote, validade: l.validade, quantidade: revelar ? l.quantidade : null })),
     }))
     .sort((a, b) => (a.produto.enderecoLocalizacao || 'ZZZ').localeCompare(b.produto.enderecoLocalizacao || 'ZZZ') || a.produto.nome.localeCompare(b.produto.nome));
-  return res.json({ ...inv, itens, saldoRevelado: revelar });
+  // ✨ FASE 12: código de barras das etiquetas de endereço dos itens (o coletor bipa 0121020010012 e acha 21.02.001.001)
+  const codigosEnd = [...new Set(inv.itens.map(i => i.produto.enderecoLocalizacao).filter((c): c is string => !!c))];
+  const enderecos = codigosEnd.length ? await prisma.localizacao.findMany({ where: { codigo: { in: codigosEnd, mode: 'insensitive' } }, select: { codigo: true, codigoBarras: true } }) : [];
+  return res.json({ ...inv, itens, saldoRevelado: revelar, enderecos });
 });
 
 // ✨ Acrescentar itens a um inventário em andamento (o saldo do sistema é registrado agora)

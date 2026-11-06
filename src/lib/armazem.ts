@@ -21,7 +21,7 @@ export const zonaDourada = (nivel: number | null | undefined) => nivel === 2 || 
 
 export const normalizarEndereco = (s?: string | null) => (s || '').toUpperCase().replace(/\s+/g, '').trim();
 
-export interface LocalBase { id: string; codigo: string; rua: string | null; modulo: number | null; nivel: number | null; tipo: string | null; ativo: boolean; armazemId: string | null }
+export interface LocalBase { id: string; codigo: string; rua: string | null; modulo: number | null; nivel: number | null; tipo: string | null; ativo: boolean; armazemId: string | null; codigoBarras?: string | null }
 export interface Posicao extends LocalBase { rua: string; modulo: number; nivel: number; ruaIndice: number; x: number; y: number; custo: number }
 
 const ordemNatural = (a: string, b: string) => a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' });
