@@ -137,8 +137,20 @@ router.get('/estoque/produtos', async (_req, res) => {
     agregados(prisma),
     classesAbc(prisma),
   ]);
+  // ✨ FASE 12: em quais endereços cada produto está e quanto há em cada um (maior primeiro)
+  const linhas = await prisma.estoque.findMany({ where: { quantidade: { gt: 0 }, status: { not: STATUS.DEMONSTRACAO } }, select: { produtoId: true, quantidade: true, localizacao: { select: { codigo: true } } } });
+  const cadastro = new Map(produtos.map(p => [p.id, p.enderecoLocalizacao]));
+  const ends = new Map<string, Map<string, number>>();
+  for (const l of linhas) {
+    const cod = l.localizacao?.codigo ?? cadastro.get(l.produtoId) ?? 'Sem endereço';
+    const m = ends.get(l.produtoId) ?? new Map<string, number>();
+    m.set(cod, (m.get(cod) ?? 0) + l.quantidade); ends.set(l.produtoId, m);
+  }
   const vazio: Agregado = { disponivel: 0, consignado: 0, avaria: 0, sobra: 0, vencido: 0, pulmao: 0, solicitado: 0, reservado: 0, transito: 0 };
-  return res.json(produtos.map(p => ({ ...p, classe: abc.get(p.id) ?? 'C', saldos: saldosDe(ag.get(p.id) ?? vazio) })));
+  return res.json(produtos.map(p => ({
+    ...p, classe: abc.get(p.id) ?? 'C', saldos: saldosDe(ag.get(p.id) ?? vazio),
+    enderecos: [...(ends.get(p.id) ?? new Map()).entries()].map(([codigo, quantidade]) => ({ codigo, quantidade })).sort((a, b) => b.quantidade - a.quantidade),
+  })));
 });
 
 // ------------------------------------------------------------ ficha do item

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { criarApp } from './app';
 import { garantirArmazens } from './lib/estoque';
 import { atualizarFichasRegistro, migrarTransformacaoAntiga } from './lib/tf';
+import { padronizarEnderecos } from './lib/enderecos';
 
 const porta = process.env.PORT || 3333;
 
@@ -14,4 +15,7 @@ garantirArmazens()
   // ✨ FASE 9: nomes oficiais dos produtos e 946 como produto único (uma vez só)
   .then(() => atualizarFichasRegistro().then(f => f.length && console.log(`Registro de transformação atualizado: ${f.join(', ')}.`)))
   .catch(err => console.error('Não foi possível atualizar as fichas do registro:', err?.message))
+  // ✨ FASE 12: número dos depósitos e código de barras dos endereços no padrão RUA.COL.NIV.APT
+  .then(() => padronizarEnderecos().then(n => n && console.log(`Endereços: ${n} código(s) de barras gerado(s).`)))
+  .catch(err => console.error('Não foi possível padronizar os endereços:', err?.message))
   .finally(() => criarApp().listen(porta, () => console.log(`🚀 Servidor ViaPro rodando na porta ${porta}`)));

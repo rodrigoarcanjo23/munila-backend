@@ -53,15 +53,16 @@ router.get('/coletor/consulta', async (req, res) => {
   // Endereço: cadastrado ou só escrito no produto
   const norm = normalizarEndereco(codigo);
   const locais = await prisma.localizacao.findMany();
-  const local = locais.find(l => normalizarEndereco(l.codigo) === norm) ?? null;
+  const local = locais.find(l => normalizarEndereco(l.codigo) === norm || l.codigoBarras === codigo) ?? null; // ✨ FASE 12: etiqueta com código de barras
   const produtosNoTexto = await prisma.produto.findMany({ where: { enderecoLocalizacao: { not: null } }, select: SELECT_PRODUTO });
-  const pelaEtiqueta = produtosNoTexto.filter(p => normalizarEndereco(p.enderecoLocalizacao) === norm);
+  const normLocal = local ? normalizarEndereco(local.codigo) : norm;
+  const pelaEtiqueta = produtosNoTexto.filter(p => normalizarEndereco(p.enderecoLocalizacao) === normLocal);
   if (!local && !pelaEtiqueta.length) throw notFound('Nenhum produto, lote ou endereço com este código.');
 
   const linhas = local ? await prisma.estoque.findMany({ where: { localizacaoId: local.id, status: STATUS.DISPONIVEL, quantidade: { gt: 0 } }, include: { produto: { select: SELECT_PRODUTO } } }) : [];
   const itens = new Map<string, { produto: (typeof linhas)[number]['produto']; quantidade: number; lotes: { lote: string | null; validade: Date | null; quantidade: number }[]; picking: boolean }>();
   for (const l of linhas) {
-    const it = itens.get(l.produtoId) ?? { produto: l.produto, quantidade: 0, lotes: [], picking: normalizarEndereco(l.produto.enderecoLocalizacao) === norm };
+    const it = itens.get(l.produtoId) ?? { produto: l.produto, quantidade: 0, lotes: [], picking: normalizarEndereco(l.produto.enderecoLocalizacao) === normLocal };
     it.quantidade += l.quantidade; it.lotes.push({ lote: l.lote, validade: l.validade, quantidade: l.quantidade });
     itens.set(l.produtoId, it);
   }

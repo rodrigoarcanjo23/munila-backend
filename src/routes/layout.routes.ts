@@ -1,5 +1,6 @@
 // ✨ FASE 7: mapa do armazém, slotting por giro e ondas de separação com rota.
 import { Router } from 'express';
+import { codigoBarrasEndereco, codigoPadrao, numeroDeposito } from '../lib/enderecos';
 import { prisma, type Db } from '../lib/prisma';
 import { badRequest, notFound, num } from '../lib/http';
 import { usuarioDaRequisicao } from '../lib/auth';
@@ -97,13 +98,18 @@ router.post('/wms/layout/gerar', async (req, res) => {
   if (!ruas.length || modulos < 1 || niveis < 1) throw badRequest('Informe as ruas, a quantidade de módulos e de níveis.');
   if (ruas.length * modulos * niveis > 3000) throw badRequest('No máximo 3.000 endereços por vez.');
   const existentes = new Set((await prisma.localizacao.findMany({ select: { codigo: true } })).map(l => l.codigo));
+  const deposito = await numeroDeposito(prisma, armazemId);
   const novos = [];
   for (const rua of ruas) for (let m = 1; m <= modulos; m++) for (let n = 1; n <= niveis; n++) {
-    const codigo = `${rua}-${String(m).padStart(2, '0')}-${n}`;
+    // ✨ FASE 12: rua numérica gera o padrão RUA.COL.NIV.APT (apto 001) com código de barras; rua com letra mantém A-03-2
+    const padrao = /^\d+$/.test(rua) ? codigoPadrao({ rua, coluna: m, nivel: n, apartamento: 1 }) : null;
+    const codigo = padrao ?? `${rua}-${String(m).padStart(2, '0')}-${n}`;
     if (existentes.has(codigo)) continue;
-    novos.push({ codigo, zona: tipo, corredor: `Rua ${rua}`, prateleira: `Módulo ${m} · nível ${n}`, armazemId, rua, modulo: m, nivel: n, tipo });
+    novos.push(padrao
+      ? { codigo, zona: `${tipo} normal`.toUpperCase(), corredor: `Rua ${rua}`, prateleira: `Col ${String(m).padStart(2, '0')} · Niv ${String(n).padStart(3, '0')} · Apt 001`, armazemId, rua: codigo.slice(0, codigo.indexOf('.')), modulo: m, nivel: n, apartamento: 1, tipo, codigoBarras: codigoBarrasEndereco(deposito, { rua, coluna: m, nivel: n, apartamento: 1 }) }
+      : { codigo, zona: tipo, corredor: `Rua ${rua}`, prateleira: `Módulo ${m} · nível ${n}`, armazemId, rua, modulo: m, nivel: n, tipo });
   }
-  if (novos.length) await prisma.localizacao.createMany({ data: novos });
+  if (novos.length) await prisma.localizacao.createMany({ data: novos, skipDuplicates: true });
   return res.status(201).json({ criados: novos.length, ignorados: ruas.length * modulos * niveis - novos.length });
 });
 
