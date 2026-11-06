@@ -60,7 +60,7 @@ export async function padronizarEnderecos(db: Db = prisma) {
   let n = 0;
   for (const l of locais) {
     const cb = codigoBarrasEndereco(l.armazemId ? num.get(l.armazemId) : padrao, { rua: l.rua, coluna: l.modulo, nivel: l.nivel, apartamento: l.apartamento });
-    if (!cb || (await db.localizacao.findUnique({ where: { codigoBarras: cb } }))) continue;
+    if (!cb || (await db.localizacao.findFirst({ where: { codigoBarras: cb } }))) continue;
     await db.localizacao.update({ where: { id: l.id }, data: { codigoBarras: cb } });
     n++;
   }

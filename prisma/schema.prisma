@@ -40,7 +40,9 @@ model Localizacao {
 
   // ✨ FASE 12: padrão RUA · COL · NIV · APT (COL = modulo) e código de barras da etiqueta
   apartamento  Int?
-  codigoBarras String?  @unique   // DEP(2) RUA(2) COL(2) NIV(3) APT(3) + dígito EAN = 13 dígitos
+  codigoBarras String?            // DEP(2) RUA(2) COL(2) NIV(3) APT(3) + dígito EAN = 13 dígitos (único: garantido pela API)
+
+  @@index([codigoBarras])
 }
 
 // ============================================================
@@ -49,7 +51,7 @@ model Localizacao {
 model Armazem {
   id         String         @id @default(uuid())
   codigo     String         @unique
-  numero     Int?           @unique // ✨ FASE 12: nº do depósito na etiqueta (DEP. 001)
+  numero     Int?           // ✨ FASE 12: nº do depósito na etiqueta (DEP. 001); único, garantido pela API
   nome       String
   endereco   String?
   padrao     Boolean        @default(false)
